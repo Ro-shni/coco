@@ -29,8 +29,9 @@ export function detectFocusOffer(text: string): string | null {
   return null;
 }
 
-const AFFIRMATION = /^(sure|yes|yep|yeah|ok(ay)?|go ahead|do it|please|pls|yes please)[.! ]*$/i;
+/** One or more of the accepted words, e.g. "sure", "Yes, please.", "Sure, go ahead.", "Ok, do it". */
+const AFFIRMATION = /^(?:(?:sure|yes|yep|yeah|ok(?:ay)?|go ahead|do it|please|pls)\s*)+$/i;
 
 export function isAffirmation(text: string): boolean {
-  return AFFIRMATION.test(text.trim());
+  return AFFIRMATION.test(text.replace(/[,.!]+/g, ' ').replace(/\s+/g, ' ').trim());
 }

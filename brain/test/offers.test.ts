@@ -25,10 +25,10 @@ describe('detectFocusOffer', () => {
 });
 
 describe('isAffirmation', () => {
-  it.each(['sure', 'Sure!', 'yes', 'yep', 'yeah', 'ok', 'okay.', 'go ahead', 'do it', 'please', 'pls', 'yes please', ' Yes please! '])('accepts %s', (t) => {
+  it.each(['sure', 'Sure!', 'yes', 'yep', 'yeah', 'ok', 'okay.', 'go ahead', 'do it', 'please', 'pls', 'yes please', ' Yes please! ', 'Yes, please.', 'Sure, go ahead.', 'Ok, do it', 'yeah ok'])('accepts %s', (t) => {
     expect(isAffirmation(t)).toBe(true);
   });
-  it.each(['sure, but what is this?', 'no', 'send', 'yes send it', ''])('rejects %s', (t) => {
+  it.each(['sure, but what is this?', 'no', 'send', 'yes send it', 'ok, send it', 'yes?', '', ', .'])('rejects %s', (t) => {
     expect(isAffirmation(t)).toBe(false);
   });
 });

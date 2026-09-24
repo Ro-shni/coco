@@ -13,31 +13,45 @@ export const FILLER_PATTERNS: readonly RegExp[] = [
 
 const EMOJI = /\p{Extended_Pictographic}/u;
 
-const OUTWARD_ACTION =
-  "sent|posted|replied|messaged|emailed|dm'?d|dm'?ed|approved|merged|deployed|scheduled|submitted|clicked|typed|pressed|created (?:a|the) (?:pr|ticket|issue)|opened (?:a|the) (?:pr|ticket)";
-/** "I sent", "I've posted", "I have just merged" — Coco claiming it did the thing. */
-const FIRST_PERSON_ACTION = new RegExp(`\\bi(?:'ve| have)?\\s+(?:just\\s+|already\\s+|also\\s+)?(?:${OUTWARD_ACTION})\\b`, 'i');
-/** A clause that opens with a bare completion: "Sent to Prince.", "Done — approved." */
-const BARE_COMPLETION = /^(?:(?:ok(?:ay)?|alright|all right|yep|great|and|so)[,!]?\s+)?(sent|posted|replied|done|approved|merged|submitted)\b/i;
-const NEGATION = /\b(?:can't|cannot|can not|couldn't|could not|didn't|did not|won't|will not|haven't|have not|not|never|unable to|no way to)\b/i;
-/** Quoted text is usually a draft for the user ("Here's a draft: \"Approved, go ahead.\""), not a claim. */
-const QUOTED = /"[^"]*"|“[^”]*”|`[^`]*`/g;
+const COMPLETION_VERB =
+  "sent|posted|replied|messaged|emailed|dm'?e?d|approved|merged|deployed|scheduled|submitted|clicked|typed|pressed|shared|forwarded|pinged|notified|delivered|created (?:a|the) (?:pr|ticket|issue)|opened (?:a|the) (?:pr|ticket)";
+const ADVERB = '(?:just|already|also|now|ok(?:ay)?|alright|all right|great|and|so|yep|done)';
+const LEAD = `(?:${ADVERB}[,!]?\\s+)*`;
+/** Things Coco might claim to have sent: "it", "that", "all", "your message", "the reply"... */
+const SUBJECT = "(?:it|that|this|all|everything|(?:the|your|my)?\\s*(?:message|reply|approval|draft|response|dm|email|note|pr|comment|update)s?)";
+const AUX = "(?:'s been|'s|\\s+(?:is|was|are|were|got|has been|have been))";
+const CLAIM_FORMS: readonly { form: RegExp; inQuestions: boolean }[] = [
+  // (a) first person: "I sent", "I've just replied", "We've pinged"
+  { form: new RegExp(`\\b(?:i|we)(?:'ve|'d| have| had)?\\s+(?:${ADVERB}\\s+)*(?:${COMPLETION_VERB})\\b`, 'i'), inQuestions: true },
+  // (b) passive/stative about the thing: "It's sent", "Message sent to Prince", "Your message has been sent" (not "... sent by pagerduty")
+  { form: new RegExp(`^${LEAD}${SUBJECT}${AUX}?\\s+(?:${ADVERB}\\s+)*(?:${COMPLETION_VERB})\\b(?!\\s+by\\b)`, 'i'), inQuestions: true },
+  // (c)/(d) bare or elliptical completion at clause start: "Sent to Prince", "Just sent it over", "Done, posted it", "Approved ✅"
+  { form: new RegExp(`^${LEAD}(?:${COMPLETION_VERB})\\b`, 'i'), inQuestions: false },
+  // (e) a clause that is just "Done"
+  { form: /^done[!.]*$/i, inQuestions: false },
+];
+const NEGATION =
+  /\b(?:can't|cannot|can not|couldn't|could not|didn't|did not|won't|will not|haven't|have not|hasn't|has not|isn't|wasn't|not|never|nothing|nobody|no one|unable to|no way to)\b/i;
+/** Drafts for the user (fenced blocks, quotes) are not claims: "```draft\nSent from my phone\n```". */
+const DRAFTS = /```[\s\S]*?(?:```|$)|"[^"]*"|“[^”]*”|`[^`]*`/g;
 
 /**
- * Returns the matched phrase when the text asserts, in first person or as a bare completion,
- * an outward action Coco cannot perform (sending, posting, approving, clicking...). Negated
- * clauses ("I can't send") and other subjects ("Prince sent", "was sent by") are not claims.
+ * Returns the matched phrase when any clause asserts that an outward action (sending, posting,
+ * approving, clicking...) is complete, in first person, passive/stative or bare form. Negated
+ * clauses ("It hasn't been sent"), third-party subjects ("Prince sent", "sent by pagerduty"),
+ * bare forms in questions ("Approved?") and drafted text are not claims.
  */
 export function claimsUnperformedAction(text: string): string | null {
-  const clean = text.replace(/[‘’]/g, "'").replace(QUOTED, ' ');
+  const clean = text.replace(/[‘’]/g, "'").replace(DRAFTS, ' ');
   for (const sentence of clean.split(/(?<=[.!?])\s+|\n+/)) {
     const isQuestion = sentence.trim().endsWith('?');
     for (const raw of sentence.split(/[.!?;:—–]+|\s-\s/)) {
       const clause = raw.trim();
-      const first = clause.match(FIRST_PERSON_ACTION);
-      if (first && !NEGATION.test(clause.slice(0, first.index))) return first[0];
-      const bare = isQuestion ? null : clause.match(BARE_COMPLETION);
-      if (bare) return bare[0].slice(bare[0].length - bare[1]!.length);
+      for (const { form, inQuestions } of CLAIM_FORMS) {
+        if (isQuestion && !inQuestions) continue;
+        const hit = clause.match(form);
+        if (hit && !NEGATION.test(clause.slice(0, hit.index! + hit[0].length))) return hit[0].trim();
+      }
     }
   }
   return null;

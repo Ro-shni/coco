@@ -80,4 +80,50 @@ describe('claimsUnperformedAction', () => {
       'claims an action you did not perform: "Sent" — you cannot send, post, click, type, approve or merge; say so and offer a draft instead',
     );
   });
+
+  it.each([
+    'Message sent!',
+    'Just sent it over',
+    "It's sent.",
+    "That's sent.",
+    'All sent.',
+    'Message sent to Prince.',
+    'Your message has been sent.',
+    'Approved ✅',
+    "I've replied to Prince",
+    'Done, posted it',
+    'Done.',
+    'Forwarded it to Prince.',
+    "We've pinged the on-call.",
+    'Everything has been shared.',
+    "It's sent, anything else?",
+  ])('flags a completion claim in any phrasing: %s', (text) => {
+    expect(claimsUnperformedAction(text)).not.toBeNull();
+  });
+
+  it.each([
+    'Prince sent you a message',
+    'you replied yesterday',
+    "I can't send yet",
+    'Nothing was sent',
+    "It hasn't been sent",
+    'Want me to draft it so you can send it?',
+    'the alert was sent by pagerduty',
+    "Here's a draft:\n```draft\nSent from my phone\n```",
+    'Approved?',
+    'Done yet?',
+    "Prince's message was sent at 10:12.",
+  ])('does not flag a negated, third-party, question or drafted phrasing: %s', (text) => {
+    expect(claimsUnperformedAction(text)).toBeNull();
+  });
+
+  it.each(['Message sent!', "It's sent.", "That's sent.", 'All sent.', 'Just sent it over', 'Message sent to Prince.', 'Your message has been sent.'])(
+    'checkReply rejects the previously missed phrasing: %s',
+    (text) => {
+      const r = checkReply({ ...base, kind: 'reply', maxSentences: 6, text });
+      expect(r.ok).toBe(false);
+      expect(r.problems.join()).toMatch(/^claims an action you did not perform: "/);
+    },
+  );
 });
+
