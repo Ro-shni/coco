@@ -26,9 +26,10 @@ export async function startServer(opts: {
   onMessage: (m: BodyToBrain) => void;
   onConnect?: () => void;
   log: Logger;
+  maxPayloadBytes?: number;
 }): Promise<BrainServer> {
   const http = createServer((_req, res) => res.writeHead(404).end());
-  const wss = new WebSocketServer({ noServer: true, maxPayload: MAX_PAYLOAD_BYTES });
+  const wss = new WebSocketServer({ noServer: true, maxPayload: opts.maxPayloadBytes ?? MAX_PAYLOAD_BYTES });
   let client: WebSocket | undefined;
 
   http.on('upgrade', (req, socket, head) => {
@@ -50,6 +51,10 @@ export async function startServer(opts: {
       });
       ws.on('close', () => {
         if (client === ws) client = undefined;
+      });
+      // Without this handler, a socket-level error (e.g. an oversize frame past maxPayload) would crash the process.
+      ws.on('error', (error) => {
+        opts.log.warn('ws_error', { error: error.message });
       });
     });
   });

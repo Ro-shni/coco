@@ -63,4 +63,17 @@ describe('startServer', () => {
     server = await startServer({ token: TOKEN, onMessage: () => undefined, log: silentLogger });
     expect(() => server!.send({ v: 1, type: 'mood', mood: 'bored' })).not.toThrow();
   });
+
+  it('a socket error (e.g. an oversize frame) is logged and does not crash the server', async () => {
+    const received: BodyToBrain[] = [];
+    server = await startServer({ token: TOKEN, onMessage: (m) => received.push(m), log: silentLogger, maxPayloadBytes: 16 });
+    const ws = connect(server.port, TOKEN);
+    await opened(ws);
+    const closed = new Promise<number>((resolve) => ws.once('close', (code) => resolve(code)));
+    ws.send('x'.repeat(1000));
+    await closed;
+    expect(received).toEqual([]);
+    // the server process is still alive and functional after the oversize frame
+    expect(() => server!.send({ v: 1, type: 'mood', mood: 'bored' })).not.toThrow();
+  });
 });

@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { ModelUnavailableError, PRIORITY } from '../../src/model/gateway.js';
+import { ModelRequestError, ModelUnavailableError, PRIORITY } from '../../src/model/gateway.js';
 import { OllamaGateway } from '../../src/model/ollama.js';
 
 type Call = { url: string; body: unknown };
@@ -54,10 +54,21 @@ describe('OllamaGateway.chat', () => {
     await expect(gw.chat({ messages: [], priority: PRIORITY.tick })).rejects.toBeInstanceOf(ModelUnavailableError);
   });
 
-  it('throws ModelUnavailableError on HTTP errors, including the status', async () => {
+  it('throws ModelRequestError on 4xx (a bad request, not an outage), including the status', async () => {
     const f = fakeFetch(() => new Response('model not found', { status: 404 }));
     const gw = new OllamaGateway({ baseUrl: 'http://ollama', model: 'm', fetchImpl: f.impl });
-    await expect(gw.chat({ messages: [], priority: PRIORITY.tick })).rejects.toThrow(/404.*model not found/);
+    const err: unknown = await gw.chat({ messages: [], priority: PRIORITY.tick }).catch((e: unknown) => e);
+    expect(err).toBeInstanceOf(ModelRequestError);
+    expect(err).not.toBeInstanceOf(ModelUnavailableError);
+    expect((err as Error).message).toMatch(/404.*model not found/);
+  });
+
+  it('throws ModelUnavailableError on 5xx, including the status', async () => {
+    const f = fakeFetch(() => new Response('server exploded', { status: 500 }));
+    const gw = new OllamaGateway({ baseUrl: 'http://ollama', model: 'm', fetchImpl: f.impl });
+    const err: unknown = await gw.chat({ messages: [], priority: PRIORITY.tick }).catch((e: unknown) => e);
+    expect(err).toBeInstanceOf(ModelUnavailableError);
+    expect((err as Error).message).toMatch(/500.*server exploded/);
   });
 
   it('throws when the response has no content', async () => {

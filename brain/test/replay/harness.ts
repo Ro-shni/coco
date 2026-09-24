@@ -72,7 +72,7 @@ export async function runReplay(
       keyframeDueAt = undefined;
       await orchestrator.handle({ v: 1, type: 'keyframe', jpegBase64: 'SlBFRw==', width: 1280, height: 800, ts: now });
     }
-    if (s % 2 === 0) orchestrator.pulse();
+    if (s % 2 === 0) await orchestrator.pulse();
     if (s > 0 && s % tickEvery === 0) await orchestrator.tick();
     const requested = sent.some((e) => e.at === s && e.msg.type === 'request_keyframe');
     if (opts.autoKeyframe && requested && keyframeDueAt === undefined) keyframeDueAt = s + 1;

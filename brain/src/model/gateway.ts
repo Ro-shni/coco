@@ -24,6 +24,11 @@ export class ModelUnavailableError extends Error {
   override name = 'ModelUnavailableError';
 }
 
+/** A request the model rejected outright (HTTP 4xx) — a bad call, not a reachability problem. */
+export class ModelRequestError extends Error {
+  override name = 'ModelRequestError';
+}
+
 export const stripThinking = (text: string): string => text.replace(/<think>[\s\S]*?<\/think>/g, '').trim();
 
 interface QueueItem {

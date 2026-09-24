@@ -85,7 +85,9 @@ async function main(): Promise<void> {
   process.stdout.write(`COCO_READY ${JSON.stringify({ port: server.port })}\n`);
   log.info('ready', { port: server.port, configDir, dataDir });
 
-  setInterval(() => orchestrator.pulse(), PULSE_MS);
+  setInterval(() => {
+    orchestrator.pulse().catch((err: unknown) => log.error('pulse_failed', { error: String(err) }));
+  }, PULSE_MS);
   setInterval(() => void orchestrator.checkHealth(), HEALTH_MS);
   void orchestrator.checkHealth();
   const scheduleTick = (): void => {

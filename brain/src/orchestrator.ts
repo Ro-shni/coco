@@ -34,9 +34,18 @@ interface PendingNudge {
   at: number;
 }
 
+interface PendingTrigger {
+  trigger: Trigger;
+  contextKey: string;
+  at: number;
+}
+
 const KEYFRAME_FRESH_MS = 60_000;
 const MUTED_STATE_KEY = 'mutedUntil';
 const RECENT_TEXTS = 20;
+const PENDING_TRIGGER_TTL_MS = 10 * 60_000;
+const HEALTH_BACKOFF_START_MS = 15_000;
+const HEALTH_BACKOFF_MAX_MS = 120_000;
 const SHH = 'shh';
 const SHH_TODAY = 'shh for today';
 const UNMUTE = 'unmute';
@@ -62,10 +71,15 @@ export class Orchestrator {
   private activity: ActivityState = 'reading';
   private keyframe: { key: string; jpeg: string; ts: number } | undefined;
   private pending: readonly PendingNudge[] = [];
+  private pendingTrigger: PendingTrigger | undefined;
   private recentTexts: ReadonlyMap<string, string> = new Map();
   private deciding = false;
   private mood: Mood | undefined;
   private online = true;
+  /** True while offline and no successful model call has announced recovery yet. */
+  private awaitingRecovery = false;
+  private healthBackoffMs = 0;
+  private nextHealthCheckAt = 0;
 
   constructor(private readonly d: OrchestratorDeps) {
     const mutedUntil = d.memory.getState<number>(MUTED_STATE_KEY);
@@ -94,10 +108,13 @@ export class Orchestrator {
     this.updateMood();
   }
 
-  pulse(): void {
+  /** Returns a promise so callers can await the pending-trigger retry; the synchronous work (expiry, keyframe request) always runs immediately. */
+  pulse(): Promise<void> {
     const now = this.d.clock();
     this.expirePending(now);
+    this.clearStalePendingTrigger(now);
     this.maybeRequestKeyframe(now);
+    return this.retryPendingTrigger();
   }
 
   async tick(): Promise<void> {
@@ -105,7 +122,18 @@ export class Orchestrator {
   }
 
   async checkHealth(): Promise<void> {
-    this.setOnline(await this.d.gateway.health());
+    const now = this.d.clock();
+    if (!this.online && now < this.nextHealthCheckAt) return; // still backing off
+    const healthy = await this.d.gateway.health();
+    if (healthy) {
+      this.healthBackoffMs = 0;
+      this.nextHealthCheckAt = 0;
+      this.clearOfflineGating();
+    } else {
+      this.healthBackoffMs = this.healthBackoffMs === 0 ? HEALTH_BACKOFF_START_MS : Math.min(this.healthBackoffMs * 2, HEALTH_BACKOFF_MAX_MS);
+      this.nextHealthCheckAt = now + this.healthBackoffMs;
+      this.goOffline();
+    }
   }
 
   // ---- inputs -------------------------------------------------------------
@@ -115,11 +143,18 @@ export class Orchestrator {
     this.updateMood();
     if (msg.private) return;
     const now = this.d.clock();
+    const key = this.d.timeline.contextKey();
+    if (this.pendingTrigger && this.pendingTrigger.contextKey !== key) this.pendingTrigger = undefined;
     this.maybeRequestKeyframe(now);
     const trigger = detectTrigger(msg, this.d.config.user.handles);
     if (trigger && this.d.triggers.isNew(trigger, now)) {
       const attempted = await this.maybeNudge(trigger, PRIORITY.trigger);
-      if (attempted) this.d.triggers.mark(trigger, now);
+      if (attempted) {
+        this.d.triggers.mark(trigger, now);
+        this.pendingTrigger = undefined;
+      } else if (key) {
+        this.pendingTrigger = { trigger, contextKey: key, at: now };
+      }
     }
   }
 
@@ -194,6 +229,7 @@ export class Orchestrator {
         },
         priority,
       );
+      this.announceRecoveryIfNeeded();
       if (decision) this.deliver(decision, opts);
     } catch (err) {
       this.onModelError(err);
@@ -233,6 +269,23 @@ export class Orchestrator {
     for (const p of this.pending.filter((p) => now - p.at >= ignoreAfterMs)) this.resolve(p.id, 'ignored');
   }
 
+  private clearStalePendingTrigger(now: number): void {
+    const p = this.pendingTrigger;
+    if (!p) return;
+    if (now - p.at >= PENDING_TRIGGER_TTL_MS || p.contextKey !== this.d.timeline.contextKey()) this.pendingTrigger = undefined;
+  }
+
+  /** Retries the held-back trigger; clears it once the model has actually been consulted, otherwise leaves it for the next pulse. */
+  private async retryPendingTrigger(): Promise<void> {
+    const p = this.pendingTrigger;
+    if (!p) return;
+    const attempted = await this.maybeNudge(p.trigger, PRIORITY.trigger);
+    if (attempted) {
+      this.d.triggers.mark(p.trigger, this.d.clock());
+      this.pendingTrigger = undefined;
+    }
+  }
+
   private resolveAll(outcome: NudgeOutcome): void {
     for (const p of this.pending) this.resolve(p.id, outcome);
   }
@@ -268,6 +321,7 @@ export class Orchestrator {
         ...(cur ? { current: cur.msg } : {}),
         incidentMode: isIncident(cur?.msg),
       });
+      this.announceRecoveryIfNeeded();
       this.say(reply, 'reply');
     } catch (err) {
       const wasOnline = this.online;
@@ -281,15 +335,53 @@ export class Orchestrator {
 
   private onModelError(err: unknown): void {
     this.d.log.error('model_error', { error: err instanceof Error ? err.message : String(err) });
-    if (err instanceof ModelUnavailableError) this.setOnline(false);
+    // A ModelRequestError (bad request) is not a reachability problem: log it and treat it as "no decision".
+    if (!(err instanceof ModelUnavailableError)) return;
+    // Discovered offline outside the health-check timer: let the next checkHealth() run immediately rather than honor a stale backoff.
+    this.healthBackoffMs = 0;
+    this.nextHealthCheckAt = 0;
+    this.goOffline();
   }
 
-  private setOnline(online: boolean): void {
-    if (online === this.online) return;
-    this.online = online;
-    this.d.log.warn('brain_online_changed', { online });
+  /** Flips online -> false and announces it (subject to the busy/mute gate). Idempotent while already offline; never touches health backoff. */
+  private goOffline(): void {
+    if (!this.online) return;
+    this.online = false;
+    this.awaitingRecovery = true;
+    this.d.log.warn('brain_online_changed', { online: false });
     this.updateMood();
-    this.say(online ? TEXT.online : TEXT.offline, 'status');
+    this.sayStatusIfAllowed(TEXT.offline);
+  }
+
+  /** health() true clears the gate that blocks unsolicited model calls, but never itself announces "I'm back" — see announceRecoveryIfNeeded. */
+  private clearOfflineGating(): void {
+    if (this.online) return;
+    this.online = true;
+    this.d.log.info('brain_health_recovered');
+    this.updateMood();
+  }
+
+  /** Called after any successful model call (decide or chat). Announces recovery once, the first time it happens after an offline period. */
+  private announceRecoveryIfNeeded(): void {
+    if (!this.awaitingRecovery) return;
+    this.awaitingRecovery = false;
+    if (!this.online) {
+      this.online = true;
+      this.healthBackoffMs = 0;
+      this.nextHealthCheckAt = 0;
+    }
+    this.updateMood();
+    this.sayStatusIfAllowed(TEXT.online);
+  }
+
+  /** Offline/online status bubbles must not interrupt or fight with the user: suppressed while muted or busy, logged instead. */
+  private sayStatusIfAllowed(text: string): void {
+    const now = this.d.clock();
+    if (this.d.policy.isMuted(now) || BUSY.has(this.activity)) {
+      this.d.log.info('status_suppressed', { text, activity: this.activity });
+      return;
+    }
+    this.say(text, 'status');
   }
 
   private computeMood(): Mood {

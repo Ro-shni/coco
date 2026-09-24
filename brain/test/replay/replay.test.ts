@@ -91,7 +91,17 @@ describe('replay: triggers wait for the user to be free', () => {
     const { says } = await runReplay(loadFixture('build-failure-while-typing'), { gateway: gw });
     const nudges = unsolicited(says);
     expect(nudges.every((n) => n.at >= 10)).toBe(true);
-    expect(nudges[0]!.at).toBe(11);
+    // the second (near-identical) context ping at t=11 re-detects the trigger before any pulse retry gets to it.
+    expect(nudges[0]!.at).toBe(10);
+    expect(gw.calls[0]!.messages[1]!.content).toContain('Trigger: build_failed');
+  });
+
+  it('holds a build failure while typing and retries it via pulse once the user stops, with no further context updates', async () => {
+    const gw = eager();
+    const { says } = await runReplay(loadFixture('build-failure-static'), { gateway: gw });
+    const nudges = unsolicited(says);
+    expect(nudges.every((n) => n.at >= 10)).toBe(true);
+    expect(nudges).toHaveLength(1);
     expect(gw.calls[0]!.messages[1]!.content).toContain('Trigger: build_failed');
   });
 });

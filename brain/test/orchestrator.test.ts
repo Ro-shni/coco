@@ -8,7 +8,7 @@ import { Timeline } from '../src/context/timeline.js';
 import { TriggerDeduper } from '../src/context/triggers.js';
 import { silentLogger } from '../src/logger.js';
 import { Memory } from '../src/memory.js';
-import { ModelUnavailableError, PRIORITY } from '../src/model/gateway.js';
+import { ModelRequestError, ModelUnavailableError, PRIORITY } from '../src/model/gateway.js';
 import { NudgePolicy } from '../src/nudge/policy.js';
 import { Orchestrator, type OrchestratorDeps } from '../src/orchestrator.js';
 import type { NudgeDecision } from '../src/persona/decision.js';
@@ -162,6 +162,31 @@ describe('strong triggers', () => {
     await s.o.handle({ ...terminalFail, ocrText: 'npm ERR! code 1\n$' });
     expect(s.decide).toHaveBeenCalledOnce();
   });
+
+  it('holds a trigger arriving while busy as pending and retries it on pulse once free, with no new context', async () => {
+    const s = setup();
+    await s.o.handle(act('typing'));
+    await s.o.handle(terminalFail);
+    expect(s.decide).not.toHaveBeenCalled();
+    await s.o.handle(act('reading'));
+    await s.o.pulse();
+    expect(s.decide).toHaveBeenCalledOnce();
+    const [input, priority] = s.decide.mock.calls[0]!;
+    expect(priority).toBe(PRIORITY.trigger);
+    expect(input.trigger).toEqual({ kind: 'build_failed', detail: 'npm ERR!' });
+    await s.o.pulse();
+    expect(s.decide).toHaveBeenCalledOnce(); // consumed: no repeat retry
+  });
+
+  it('drops a pending trigger once the user moves to a different context', async () => {
+    const s = setup();
+    await s.o.handle(act('typing'));
+    await s.o.handle(terminalFail);
+    await s.o.handle(act('reading'));
+    await s.o.handle(runbook);
+    await s.o.pulse();
+    expect(s.decide).not.toHaveBeenCalled();
+  });
 });
 
 describe('engagement', () => {
@@ -259,24 +284,96 @@ describe('muting', () => {
 });
 
 describe('model health', () => {
-  it('a model error flips to offline once (sleepy + status), and health recovery announces once', async () => {
+  it('a model error flips to offline once (sleepy + status); recovery is announced only after a successful model call', async () => {
     const s = setup();
-    s.decide.mockRejectedValue(new ModelUnavailableError('down'));
+    s.decide.mockRejectedValueOnce(new ModelUnavailableError('down'));
     await s.o.handle(runbook);
     await s.o.tick();
     expect(s.moods().at(-1)).toBe('sleepy');
     expect(s.says().filter((m) => m.kind === 'status').map((m) => m.text)).toEqual(["Brain offline: Ollama isn't answering. I'll keep checking."]);
+
     s.health.mockResolvedValue(false);
     await s.o.checkHealth();
     s.advance(200_000);
     await s.o.tick();
-    expect(s.decide).toHaveBeenCalledOnce();
+    expect(s.decide).toHaveBeenCalledOnce(); // still offline: tick doesn't consult the model at all
+
     s.health.mockResolvedValue(true);
     await s.o.checkHealth();
-    await s.o.checkHealth();
-    expect(s.says().filter((m) => m.kind === 'status')).toHaveLength(2);
-    expect(s.says().at(-1)!.text).toBe("I'm back. Brain's online.");
+    // health() true clears the gate but must not itself say "I'm back"
+    expect(s.says().filter((m) => m.kind === 'status')).toHaveLength(1);
+
+    s.decide.mockResolvedValue(decision);
+    await s.o.tick();
+    expect(s.decide).toHaveBeenCalledTimes(2);
+    expect(s.says().filter((m) => m.kind === 'status').map((m) => m.text)).toEqual([
+      "Brain offline: Ollama isn't answering. I'll keep checking.",
+      "I'm back. Brain's online.",
+    ]);
     expect(s.moods().at(-1)).toBe('curious');
+  });
+
+  it('suppresses the offline bubble while busy, but still flips mood to sleepy', async () => {
+    const s = setup();
+    await s.o.handle(act('in_call'));
+    s.health.mockResolvedValue(false);
+    await s.o.checkHealth();
+    expect(s.moods().at(-1)).toBe('sleepy');
+    expect(s.says()).toHaveLength(0);
+  });
+
+  it('backs off repeated health checks while offline (15s, then 30s, then 60s)', async () => {
+    const s = setup();
+    s.health.mockResolvedValue(false);
+    await s.o.checkHealth();
+    expect(s.health).toHaveBeenCalledTimes(1);
+    s.advance(10_000);
+    await s.o.checkHealth(); // within the 15s backoff window
+    expect(s.health).toHaveBeenCalledTimes(1);
+    s.advance(6_000); // 16s since the last check
+    await s.o.checkHealth();
+    expect(s.health).toHaveBeenCalledTimes(2);
+    s.advance(25_000); // within the 30s backoff window
+    await s.o.checkHealth();
+    expect(s.health).toHaveBeenCalledTimes(2);
+    s.advance(10_000); // 35s since the last check
+    await s.o.checkHealth();
+    expect(s.health).toHaveBeenCalledTimes(3);
+  });
+
+  it('resets the backoff to 15s once recovered', async () => {
+    const s = setup();
+    s.health.mockResolvedValue(false);
+    await s.o.checkHealth(); // fails -> backoff 15s
+    expect(s.health).toHaveBeenCalledTimes(1);
+    s.advance(16_000);
+    await s.o.checkHealth(); // fails again -> backoff 30s
+    expect(s.health).toHaveBeenCalledTimes(2);
+    s.advance(30_000); // past the 30s window
+    s.health.mockResolvedValue(true);
+    await s.o.checkHealth(); // recovers -> backoff resets
+    expect(s.health).toHaveBeenCalledTimes(3);
+    s.health.mockResolvedValue(false);
+    await s.o.checkHealth(); // fresh offline period: not gated (was online), backoff starts at 15s again, not 60s
+    expect(s.health).toHaveBeenCalledTimes(4);
+    s.advance(10_000);
+    await s.o.checkHealth(); // within the fresh 15s window -> skipped
+    expect(s.health).toHaveBeenCalledTimes(4);
+    s.advance(6_000); // 16s since the last check
+    await s.o.checkHealth();
+    expect(s.health).toHaveBeenCalledTimes(5);
+  });
+
+  it('a ModelRequestError is logged as "no decision" and does not flip offline', async () => {
+    const s = setup();
+    s.decide.mockRejectedValueOnce(new ModelRequestError('bad schema'));
+    await s.o.handle(runbook);
+    await s.o.tick();
+    expect(s.says()).toHaveLength(0);
+    expect(s.moods().at(-1)).not.toBe('sleepy');
+    s.decide.mockResolvedValue(decision);
+    await s.o.tick();
+    expect(s.says().at(-1)).toMatchObject({ kind: 'suggestion' });
   });
 
   it('chat while offline gets one clear answer instead of silence', async () => {
@@ -286,6 +383,23 @@ describe('model health', () => {
     s.reply.mockRejectedValue(new ModelUnavailableError('down'));
     await s.o.handle({ v: 1, type: 'utterance', text: 'hello?', source: 'chat' });
     expect(s.says().at(-1)).toMatchObject({ kind: 'reply', text: "My brain's offline right now (Ollama isn't answering). I'll be back when it is." });
+  });
+
+  it('a chat reply that succeeds before checkHealth catches up also clears offline and announces recovery', async () => {
+    const s = setup();
+    s.decide.mockRejectedValueOnce(new ModelUnavailableError('down'));
+    await s.o.handle(runbook);
+    await s.o.tick(); // goes offline
+    expect(s.moods().at(-1)).toBe('sleepy');
+
+    await s.o.handle({ v: 1, type: 'utterance', text: 'hello?', source: 'chat' }); // reply succeeds (default mock)
+    expect(s.reply).toHaveBeenCalledOnce();
+    // the recovery bubble is announced before the reply itself
+    expect(s.says().slice(-2)).toMatchObject([{ kind: 'status', text: "I'm back. Brain's online." }, { kind: 'reply', text: 'An answer.' }]);
+    expect(s.moods().at(-1)).toBe('curious');
+
+    await s.o.tick(); // online again: tick can consult the model without help from checkHealth
+    expect(s.decide).toHaveBeenCalledTimes(2);
   });
 
   it('re-sends the current mood when the body reconnects', async () => {

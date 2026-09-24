@@ -1,4 +1,4 @@
-import { type ChatRequest, type ModelGateway, ModelUnavailableError, PriorityQueue, stripThinking } from './gateway.js';
+import { type ChatRequest, type ModelGateway, ModelRequestError, ModelUnavailableError, PriorityQueue, stripThinking } from './gateway.js';
 
 export interface OllamaOptions {
   baseUrl: string;
@@ -41,7 +41,10 @@ export class OllamaGateway implements ModelGateway {
       throw new ModelUnavailableError(`Ollama unreachable: ${(err as Error).message}`);
     }
     if (!res.ok) {
-      throw new ModelUnavailableError(`Ollama HTTP ${res.status}: ${(await res.text()).slice(0, 200)}`);
+      const detail = `Ollama HTTP ${res.status}: ${(await res.text()).slice(0, 200)}`;
+      // 4xx is a bad request (prompt/schema/etc.), not a reachability problem; only network errors and 5xx flip us offline.
+      if (res.status >= 400 && res.status < 500) throw new ModelRequestError(detail);
+      throw new ModelUnavailableError(detail);
     }
     const json = (await res.json()) as { message?: { content?: unknown } };
     const content = json.message?.content;
