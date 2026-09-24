@@ -64,7 +64,7 @@ export function buildNudgeMessages(input: NudgePromptInput): ChatMessage[] {
     input.facts.length > 0 ? `Things you know about the user:\n${input.facts.map((f) => `- ${f}`).join('\n')}` : undefined,
     `Recent timeline:\n${wrapUntrusted('timeline', input.timeline)}`,
     `Current screen:\n${wrapUntrusted('screen', describeScreen(input.current))}`,
-    input.trigger ? `Trigger: ${input.trigger.kind} (${input.trigger.detail})` : undefined,
+    input.trigger ? `Trigger: ${input.trigger.kind}\n${wrapUntrusted('trigger', input.trigger.detail)}` : undefined,
     input.hasImage ? 'A screenshot of the focused window is attached.' : undefined,
     'Decide whether to speak now.',
   ]
