@@ -11,6 +11,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private var menu: StatusMenu!
     private let permissions = PermissionsWindowController()
     private var paused = false
+    private let voiceInput = VoiceInput()
+    private let voiceOutput = VoiceOutput()
+    private let pushToTalk = PushToTalkHotkey()
+    /// True from ⌥Space down until the final transcript arrives.
+    private var recording = false
+    private var lastActivity: ActivityState = .reading
     private var hotkeyMonitors: [Any] = []
     private static let pauseKeyCode: UInt16 = 35  // "P"
     /// Diagnostics only (counts/ids, never OCR text/title/URL content): last bundleId logged via context_out.
@@ -30,6 +36,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         menu = StatusMenu()
         wire()
         installPauseHotkey()
+        pushToTalk.install()
         brain.start()
         perception.start()
         sensor.start()
@@ -76,6 +83,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         perception.onKeyframe = { [weak self] frame in self?.brain.send(.keyframe(frame)) }
         perception.onPermissionMissing = { [weak self] text in self?.overlay.showLocal(text) }
         sensor.onActivity = { [weak self] activity in
+            self?.lastActivity = activity
             self?.overlay.setActivity(activity)
             self?.brain.send(.activity(ActivityPayload(state: activity, ts: nowMs())))
         }
@@ -93,14 +101,52 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         menu.onPermissions = { [weak self] in self?.permissions.show() }
         menu.onTogglePause = { [weak self] in self?.togglePause() }
         menu.onSetHome = { [weak self] spec in self?.overlay.setHome(spec) }
+        menu.onVoiceEnabledChanged = { [weak self] enabled in if !enabled { self?.voiceOutput.stop() } }
+        wireVoice()
+    }
+
+    private func wireVoice() {
+        pushToTalk.onDown = { [weak self] in self?.beginListening() }
+        pushToTalk.onUp = { [weak self] in self?.voiceInput.stop() }
+        voiceInput.onPartial = { [weak self] text in self?.overlay.setListeningText(text) }
+        voiceInput.onFinal = { [weak self] text in self?.endListening(text) }
+        voiceInput.onProblem = { [weak self] text in self?.overlay.showLocal(text) }
+        voiceOutput.onSpeakingChanged = { [weak self] speaking in self?.overlay.setVoiceSpeaking(speaking) }
+    }
+
+    private func beginListening() {
+        guard !recording else { return }
+        voiceOutput.stop()  // barge-in: the user talking always cuts Coco off
+        sensor.selfRecording = true  // set before the mic starts so Coco's own recording never reads as a call
+        guard voiceInput.start() else {
+            sensor.selfRecording = false
+            return
+        }
+        recording = true
+        overlay.setListening(true)
+    }
+
+    private func endListening(_ text: String) {
+        recording = false
+        sensor.selfRecording = false
+        if !text.isEmpty { overlay.setListeningText(text) }  // the final transcript can differ from the last partial
+        overlay.setListening(false, heardSomething: !text.isEmpty)
+        guard !text.isEmpty else { return }
+        brain.send(.utterance(UtterancePayload(text: String(text.prefix(Self.chatMaxChars)), source: .voice)))
     }
 
     private func handle(_ msg: BrainToBody) {
         switch msg {
         case .say(let say):
             chat.append(fromUser: false, text: say.text, nudgeId: say.nudgeId, draft: say.draft, draftApp: say.draftApp)
-            if say.kind == .reply && chat.isVisible { return }  // the chat window already shows it
-            overlay.show(say, anchor: say.pointAt.flatMap { perception.anchorRect(for: $0) })
+            // The chat window already shows a reply while it's open; otherwise the overlay does.
+            if !(say.kind == .reply && chat.isVisible) {
+                overlay.show(say, anchor: say.pointAt.flatMap { perception.anchorRect(for: $0) })
+            }
+            // Only the text is spoken — a draft never is.
+            if SpeakPolicy.shouldSpeak(say: say, voiceEnabled: VoiceOutput.isEnabled, activity: lastActivity, recording: recording) {
+                voiceOutput.speak(say.text)
+            }
         case .requestKeyframe:
             perception.captureKeyframe()
         case .mood(let payload):

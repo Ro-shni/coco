@@ -2,8 +2,10 @@ import Testing
 @testable import CocoCore
 
 @Suite struct ActivityClassifierTests {
-    func signals(keys: Int = 0, idle: Double = 1, mic: Bool = false, cam: Bool = false, share: Bool = false) -> ActivitySignals {
-        ActivitySignals(keystrokesLast10s: keys, secondsSinceInput: idle, micInUse: mic, cameraInUse: cam, screenSharing: share)
+    func signals(keys: Int = 0, idle: Double = 1, mic: Bool = false, cam: Bool = false, share: Bool = false,
+                 selfRec: Bool = false) -> ActivitySignals {
+        ActivitySignals(keystrokesLast10s: keys, secondsSinceInput: idle, micInUse: mic, cameraInUse: cam, screenSharing: share,
+                        selfRecording: selfRec)
     }
 
     @Test func readingByDefault() { #expect(ActivityClassifier.classify(signals()) == .reading) }
@@ -18,6 +20,14 @@ import Testing
     @Test func callBeatsTypingAndIdle() {
         #expect(ActivityClassifier.classify(signals(keys: 50, mic: true)) == .inCall)
         #expect(ActivityClassifier.classify(signals(idle: 500, cam: true)) == .inCall)
+    }
+    @Test func cocosOwnRecordingIsNotACall() {
+        #expect(ActivityClassifier.classify(signals(mic: true, selfRec: true)) == .reading)
+        #expect(ActivityClassifier.classify(signals(keys: 50, mic: true, selfRec: true)) == .typing)
+    }
+    @Test func selfRecordingDoesNotHideCameraOrSharing() {
+        #expect(ActivityClassifier.classify(signals(mic: true, cam: true, selfRec: true)) == .inCall)
+        #expect(ActivityClassifier.classify(signals(mic: true, share: true, selfRec: true)) == .sharing)
     }
     @Test func sharingBeatsEverything() {
         #expect(ActivityClassifier.classify(signals(keys: 50, mic: true, share: true)) == .sharing)

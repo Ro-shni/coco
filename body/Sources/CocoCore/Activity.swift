@@ -6,10 +6,14 @@ public struct ActivitySignals: Equatable, Sendable {
     public var micInUse: Bool
     public var cameraInUse: Bool
     public var screenSharing: Bool
+    /// Coco itself is recording (push-to-talk): the mic being busy is then not a call.
+    public var selfRecording: Bool
 
-    public init(keystrokesLast10s: Int, secondsSinceInput: Double, micInUse: Bool, cameraInUse: Bool, screenSharing: Bool) {
+    public init(keystrokesLast10s: Int, secondsSinceInput: Double, micInUse: Bool, cameraInUse: Bool, screenSharing: Bool,
+                selfRecording: Bool = false) {
         self.keystrokesLast10s = keystrokesLast10s; self.secondsSinceInput = secondsSinceInput
         self.micInUse = micInUse; self.cameraInUse = cameraInUse; self.screenSharing = screenSharing
+        self.selfRecording = selfRecording
     }
 }
 
@@ -19,7 +23,7 @@ public enum ActivityClassifier {
 
     public static func classify(_ s: ActivitySignals) -> ActivityState {
         if s.screenSharing { return .sharing }
-        if s.micInUse || s.cameraInUse { return .inCall }
+        if (s.micInUse && !s.selfRecording) || s.cameraInUse { return .inCall }
         if s.keystrokesLast10s >= typingKeystrokesPer10s { return .typing }
         if s.secondsSinceInput >= idleAfterSeconds { return .idle }
         return .reading

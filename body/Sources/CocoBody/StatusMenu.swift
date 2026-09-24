@@ -1,14 +1,18 @@
 import AppKit
 import CocoCore
 
-final class StatusMenu: NSObject {
+final class StatusMenu: NSObject, NSMenuDelegate {
     var onOpenChat: (() -> Void)?
     var onTogglePause: (() -> Void)?
     var onPermissions: (() -> Void)?
     var onSetHome: ((HomeSpec) -> Void)?
+    /// Voice was turned on/off (the setting itself is already saved).
+    var onVoiceEnabledChanged: ((Bool) -> Void)?
 
     private let item = NSStatusBar.system.statusItem(withLength: NSStatusItem.variableLength)
     private let pauseItem = NSMenuItem(title: "Pause watching  ⌃⌥P", action: #selector(togglePause), keyEquivalent: "")
+    private let voiceToggleItem = NSMenuItem(title: "Voice on", action: #selector(toggleVoice), keyEquivalent: "")
+    private let voicesMenu = NSMenu()
     private static let corners: [(title: String, corner: ScreenGeometry.Corner)] = [
         ("Bottom right", .bottomRight), ("Bottom left", .bottomLeft),
         ("Top right", .topRight), ("Top left", .topLeft),
@@ -24,6 +28,15 @@ final class StatusMenu: NSObject {
         menu.addItem(withTitle: "Permissions…", action: #selector(permissions), keyEquivalent: "").target = self
         menu.addItem(.separator())
         menu.addItem(homePositionItem())
+        menu.addItem(.separator())
+        voiceToggleItem.target = self
+        voiceToggleItem.state = VoiceOutput.isEnabled ? .on : .off
+        menu.addItem(voiceToggleItem)
+        voicesMenu.delegate = self
+        let voicesItem = NSMenuItem(title: "Voice", action: nil, keyEquivalent: "")
+        voicesItem.submenu = voicesMenu
+        menu.addItem(voicesItem)
+        menu.addItem(withTitle: "Hold ⌥Space to talk", action: nil, keyEquivalent: "").isEnabled = false
         menu.addItem(.separator())
         menu.addItem(withTitle: "Quit Coco", action: #selector(NSApplication.terminate(_:)), keyEquivalent: "q")
         item.menu = menu
@@ -49,6 +62,39 @@ final class StatusMenu: NSObject {
         let item = NSMenuItem(title: "Home position", action: nil, keyEquivalent: "")
         item.submenu = submenu
         return item
+    }
+
+    /// Rebuilds the voice list each time it opens (voices can be installed while Coco runs).
+    func menuNeedsUpdate(_ menu: NSMenu) {
+        guard menu === voicesMenu else { return }
+        menu.removeAllItems()
+        let voices = VoiceOutput.englishVoices().sorted { ($0.name, $0.language) < ($1.name, $1.language) }
+        guard !voices.isEmpty else {
+            menu.addItem(withTitle: "No English voices installed", action: nil, keyEquivalent: "").isEnabled = false
+            return
+        }
+        let current = VoiceOutput.currentVoiceId()
+        for voice in voices {
+            let label = voice.quality > 0 ? "\(voice.name) (\(voice.language), \(voice.quality == 2 ? "premium" : "enhanced"))"
+                                          : "\(voice.name) (\(voice.language))"
+            let entry = NSMenuItem(title: label, action: #selector(selectVoice(_:)), keyEquivalent: "")
+            entry.target = self
+            entry.representedObject = voice.identifier
+            entry.state = voice.identifier == current ? .on : .off
+            menu.addItem(entry)
+        }
+    }
+
+    @objc private func toggleVoice() {
+        let enabled = !VoiceOutput.isEnabled
+        VoiceOutput.isEnabled = enabled
+        voiceToggleItem.state = enabled ? .on : .off
+        onVoiceEnabledChanged?(enabled)
+    }
+
+    @objc private func selectVoice(_ sender: NSMenuItem) {
+        guard let id = sender.representedObject as? String else { return }
+        UserDefaults.standard.set(id, forKey: VoiceOutput.voiceIdKey)
     }
 
     @objc private func openChat() { onOpenChat?() }

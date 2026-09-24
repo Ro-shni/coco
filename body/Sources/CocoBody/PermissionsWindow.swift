@@ -32,6 +32,8 @@ private struct PermissionsView: View {
             }
             Text("After granting Screen Recording, macOS may ask you to quit and reopen Coco.")
                 .font(.caption).foregroundStyle(.secondary)
+            Text("Tip: hold ⌥Space to talk to Coco. Microphone and Speech Recognition are only needed for that.")
+                .font(.caption).foregroundStyle(.secondary)
         }
         .padding(20)
         .frame(width: 460)
@@ -43,7 +45,7 @@ final class PermissionsWindowController {
 
     func show() {
         if window == nil {
-            let w = NSWindow(contentRect: CGRect(x: 0, y: 0, width: 460, height: 280), styleMask: [.titled, .closable],
+            let w = NSWindow(contentRect: CGRect(x: 0, y: 0, width: 460, height: 380), styleMask: [.titled, .closable],
                              backing: .buffered, defer: false)
             w.title = "Coco permissions"
             w.isReleasedWhenClosed = false

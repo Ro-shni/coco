@@ -21,6 +21,13 @@ final class OverlayController {
     /// Whether the current gesture has already crossed the drag threshold — guards the
     /// bubble-hide/presence-dismiss so they fire once per gesture, not on every pixel of movement.
     private var didStartDrag = false
+    /// The brain's latest mood; the face shows `curious` instead while listening.
+    private var brainMood: Mood = .curious
+    /// Push-to-talk is capturing: the bubble stays up and Coco looks at it with the curious face.
+    private var listening = false
+    /// Coco's voice is speaking: the bubble stays up and the speaking face shows.
+    private var voiceSpeaking = false
+    private static let listeningPrompt = "Listening…"
     /// Panel holding the 64 pt character plus its glow margin.
     private static let characterSize = CGSize(width: CharacterView.characterPoints + 2 * CharacterView.margin,
                                               height: CharacterView.characterPoints + 2 * CharacterView.margin)
@@ -64,7 +71,35 @@ final class OverlayController {
         show(SayPayload(nudgeId: "local-\(UUID().uuidString)", text: text, kind: .status, chips: [], speak: false), anchor: nil)
     }
 
-    func setMood(_ mood: Mood) { characterModel.mood = mood }
+    func setMood(_ mood: Mood) {
+        brainMood = mood
+        applyMood()
+    }
+
+    /// Enters/leaves listening mode. Entering shows a local "Listening…" bubble; leaving with nothing heard
+    /// dismisses it, otherwise the transcript stays until Coco answers (or the bubble times out).
+    func setListening(_ on: Bool, heardSomething: Bool = false) {
+        listening = on
+        applyMood()
+        if on {
+            showLocal(Self.listeningPrompt)
+        } else if !heardSomething {
+            presence.dismiss()
+        }
+        apply()
+    }
+
+    /// Live transcript while listening.
+    func setListeningText(_ text: String) {
+        guard listening else { return }
+        bubbleModel.text = text.isEmpty ? Self.listeningPrompt : text
+        relayoutBubble()
+    }
+
+    func setVoiceSpeaking(_ on: Bool) {
+        voiceSpeaking = on
+        apply()
+    }
 
     func setActivity(_ activity: ActivityState) {
         presence.onActivity(activity, now: Date().timeIntervalSince1970)
@@ -96,18 +131,22 @@ final class OverlayController {
 
     private func frameTick() {
         let now = Date().timeIntervalSince1970
+        if listening || voiceSpeaking { presence.onInteraction(now: now) }  // keep the bubble up meanwhile
         presence.tick(now: now)
         apply()
         characterModel.tick(now: now)
-        let mouse = NSEvent.mouseLocation
+        let lookAt = listening && bubblePanel.isVisible
+            ? CGPoint(x: bubblePanel.frame.midX, y: bubblePanel.frame.midY)
+            : NSEvent.mouseLocation
         let center = CGPoint(x: characterPanel.frame.midX, y: characterPanel.frame.midY)
-        let dx = mouse.x - center.x, dy = mouse.y - center.y
+        let dx = lookAt.x - center.x, dy = lookAt.y - center.y
         let length = max(1, (dx * dx + dy * dy).squareRoot())
         characterModel.eyeOffset = CGSize(width: dx / length * 3, height: -dy / length * 3)
     }
 
     private func apply() {
-        let speaking = presence.state == .speaking
+        // Listening uses the curious face, not the speaking one; Coco's voice always uses the speaking face.
+        let speaking = (presence.state == .speaking && !listening) || voiceSpeaking
         if characterModel.speaking != speaking { characterModel.speaking = speaking }
         switch presence.state {
         case .speaking:
@@ -117,6 +156,16 @@ final class OverlayController {
             if bubblePanel.isVisible { bubblePanel.orderOut(nil) }
             if !atHome && !isDragging { moveHome(animated: true) }
         }
+    }
+
+    private func applyMood() {
+        let mood = listening ? Mood.curious : brainMood
+        if characterModel.mood != mood { characterModel.mood = mood }
+    }
+
+    private func relayoutBubble() {
+        guard bubblePanel.isVisible, let visible = screenUnderCursor()?.visibleFrame else { return }
+        layoutBubble(nextTo: characterPanel.frame.origin, in: visible)
     }
 
     private func moveHome(animated: Bool) {

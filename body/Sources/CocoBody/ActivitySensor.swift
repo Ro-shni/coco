@@ -5,6 +5,8 @@ import Foundation
 final class ActivitySensor {
     var onActivity: ((ActivityState) -> Void)?
     private(set) var typingDetectionAvailable = false
+    /// Set while Coco's own push-to-talk holds the mic, so that isn't classified as a call.
+    var selfRecording = false
     private var keys = KeystrokeWindow()
     private var tap: CFMachPort?
     private var runLoopSource: CFRunLoopSource?
@@ -72,7 +74,8 @@ final class ActivitySensor {
             secondsSinceInput: CGEventSource.secondsSinceLastEventType(.combinedSessionState, eventType: anyInput),
             micInUse: SystemSignals.isMicInUse(),
             cameraInUse: SystemSignals.isCameraInUse(),
-            screenSharing: SystemSignals.isScreenSharing()
+            screenSharing: SystemSignals.isScreenSharing(),
+            selfRecording: selfRecording
         )
         onActivity?(ActivityClassifier.classify(signals))
     }
