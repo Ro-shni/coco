@@ -25,23 +25,31 @@ import Testing
     }
     @Test func sendsFirstThenOnlyOnChange() {
         var d = ContextChangeDetector()
-        #expect(d.shouldSend(payload()))
-        #expect(!d.shouldSend(payload()))
-        #expect(!d.shouldSend(payload(ocr: "A   B")))  // whitespace/case-insensitive
-        #expect(d.shouldSend(payload(title: "other")))
+        let first = d.shouldSend(payload())
+        #expect(first)
+        let second = d.shouldSend(payload())
+        #expect(!second)
+        let third = d.shouldSend(payload(ocr: "A   B"))  // whitespace/case-insensitive
+        #expect(!third)
+        let fourth = d.shouldSend(payload(title: "other"))
+        #expect(fourth)
     }
     @Test func timestampAloneIsNotAChange() {
         var d = ContextChangeDetector()
         var p = payload()
-        #expect(d.shouldSend(p))
+        let first = d.shouldSend(p)
+        #expect(first)
         p.ts = 999
-        #expect(!d.shouldSend(p))
+        let second = d.shouldSend(p)
+        #expect(!second)
     }
     @Test func resetForcesNextSend() {
         var d = ContextChangeDetector()
-        #expect(d.shouldSend(payload()))
+        let first = d.shouldSend(payload())
+        #expect(first)
         d.reset()
-        #expect(d.shouldSend(payload()))
+        let second = d.shouldSend(payload())
+        #expect(second)
     }
 }
 
