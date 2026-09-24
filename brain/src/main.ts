@@ -60,10 +60,17 @@ async function main(): Promise<void> {
     log,
   });
 
-  const recordPath = process.env.COCO_RECORD;
+  let recordPath = process.env.COCO_RECORD;
   const startedAt = Date.now();
   const record = (msg: BodyToBrain) => {
-    if (recordPath) appendFileSync(recordPath, `${JSON.stringify({ at: Math.round((Date.now() - startedAt) / 1000), msg })}\n`);
+    if (recordPath) {
+      try {
+        appendFileSync(recordPath, `${JSON.stringify({ at: Math.round((Date.now() - startedAt) / 1000), msg })}\n`);
+      } catch (err: unknown) {
+        log.warn('record_failed', { error: String(err) });
+        recordPath = undefined;
+      }
+    }
   };
 
   server = await startServer({
