@@ -7,6 +7,7 @@ final class ActivitySensor {
     private(set) var typingDetectionAvailable = false
     private var keys = KeystrokeWindow()
     private var tap: CFMachPort?
+    private var runLoopSource: CFRunLoopSource?
     private var timer: Timer?
 
     func start() {
@@ -14,6 +15,22 @@ final class ActivitySensor {
         timer = Timer.scheduledTimer(withTimeInterval: 2, repeats: true) { [weak self] _ in self?.report() }
         report()
     }
+
+    /// Tears down the tap, run loop source, and timer. Safe to call more than once.
+    func stop() {
+        timer?.invalidate()
+        if let tap {
+            CGEvent.tapEnable(tap: tap, enable: false)
+            if let runLoopSource { CFRunLoopRemoveSource(CFRunLoopGetMain(), runLoopSource, .commonModes) }
+            CFMachPortInvalidate(tap)
+        }
+        tap = nil
+        runLoopSource = nil
+        timer = nil
+        typingDetectionAvailable = false
+    }
+
+    deinit { stop() }
 
     fileprivate func recordKeystroke() { keys.record(at: Date().timeIntervalSince1970) }
     fileprivate func reenableTap() { if let tap { CGEvent.tapEnable(tap: tap, enable: true) } }
@@ -31,6 +48,8 @@ final class ActivitySensor {
             }
             return Unmanaged.passUnretained(event)
         }
+        // passUnretained is safe here: the sensor owns the tap and tears it down (stop()/deinit)
+        // before it goes away, so the callback never outlives the object it points to.
         guard let tap = CGEvent.tapCreate(tap: .cgSessionEventTap, place: .headInsertEventTap, options: .listenOnly,
                                           eventsOfInterest: mask, callback: callback,
                                           userInfo: Unmanaged.passUnretained(self).toOpaque()) else {
@@ -39,7 +58,9 @@ final class ActivitySensor {
         }
         self.tap = tap
         typingDetectionAvailable = true
-        CFRunLoopAddSource(CFRunLoopGetMain(), CFMachPortCreateRunLoopSource(nil, tap, 0), .commonModes)
+        let source = CFMachPortCreateRunLoopSource(nil, tap, 0)
+        runLoopSource = source
+        CFRunLoopAddSource(CFRunLoopGetMain(), source, .commonModes)
         CGEvent.tapEnable(tap: tap, enable: true)
     }
 
