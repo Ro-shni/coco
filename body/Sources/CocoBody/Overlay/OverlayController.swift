@@ -38,8 +38,7 @@ final class OverlayController {
         bubbleModel.chips = say.chips
         bubbleModel.nudgeId = say.nudgeId
         let mouse = NSEvent.mouseLocation
-        let screen = NSScreen.screens.first { $0.frame.contains(mouse) } ?? NSScreen.main
-        guard let visible = screen?.visibleFrame else { return }
+        guard let visible = screenUnderCursor()?.visibleFrame else { return }
         let target = ScreenGeometry.clampOrigin(CGPoint(x: mouse.x + Self.cursorOffset.x, y: mouse.y + Self.cursorOffset.y),
                                                 size: Self.characterSize, in: visible)
         move(characterPanel, to: target, animated: true)
@@ -96,10 +95,15 @@ final class OverlayController {
     }
 
     private func moveHome(animated: Bool) {
-        guard let visible = NSScreen.main?.visibleFrame else { return }
+        guard let visible = screenUnderCursor()?.visibleFrame else { return }
         move(characterPanel, to: ScreenGeometry.homeOrigin(corner: corner, size: Self.characterSize, visibleFrame: visible, margin: 16),
              animated: animated)
         atHome = true
+    }
+
+    private func screenUnderCursor() -> NSScreen? {
+        let mouse = NSEvent.mouseLocation
+        return NSScreen.screens.first { $0.frame.contains(mouse) } ?? NSScreen.main
     }
 
     private func move(_ panel: NSPanel, to origin: CGPoint, animated: Bool) {
