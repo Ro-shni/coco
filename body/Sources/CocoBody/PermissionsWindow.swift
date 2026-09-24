@@ -47,11 +47,13 @@ final class PermissionsWindowController {
                              backing: .buffered, defer: false)
             w.title = "Coco permissions"
             w.isReleasedWhenClosed = false
+            w.collectionBehavior = [.moveToActiveSpace, .fullScreenAuxiliary]
             w.contentView = NSHostingView(rootView: PermissionsView())
             w.center()
             window = w
         }
         NSApp.activate(ignoringOtherApps: true)
         window?.makeKeyAndOrderFront(nil)
+        window?.orderFrontRegardless()
     }
 }

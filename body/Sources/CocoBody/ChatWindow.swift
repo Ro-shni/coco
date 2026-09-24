@@ -73,12 +73,14 @@ final class ChatWindowController {
                              styleMask: [.titled, .closable, .resizable], backing: .buffered, defer: false)
             w.title = "Coco"
             w.isReleasedWhenClosed = false
+            w.collectionBehavior = [.moveToActiveSpace, .fullScreenAuxiliary]
             w.contentView = NSHostingView(rootView: ChatView(model: model, onSend: { [weak self] in self?.onSend?($0) }))
             w.center()
             window = w
         }
         NSApp.activate(ignoringOtherApps: true)
         window?.makeKeyAndOrderFront(nil)
+        window?.orderFrontRegardless()
     }
 
     func append(fromUser: Bool, text: String) {
