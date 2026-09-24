@@ -60,7 +60,16 @@ export const FocusResultMsg = z.object({
 });
 export type FocusResultMsg = z.infer<typeof FocusResultMsg>;
 
-export const BodyToBrain = z.discriminatedUnion('type', [ContextMsg, ActivityMsg, KeyframeMsg, UtteranceMsg, ChipMsg, FocusResultMsg]);
+export const PasteResultMsg = z.object({
+  v,
+  type: z.literal('paste_result'),
+  requestId: z.string(),
+  ok: z.boolean(),
+  detail: z.string().optional(),
+});
+export type PasteResultMsg = z.infer<typeof PasteResultMsg>;
+
+export const BodyToBrain = z.discriminatedUnion('type', [ContextMsg, ActivityMsg, KeyframeMsg, UtteranceMsg, ChipMsg, FocusResultMsg, PasteResultMsg]);
 export type BodyToBrain = z.infer<typeof BodyToBrain>;
 
 export const SayMsg = z.object({
@@ -72,6 +81,8 @@ export const SayMsg = z.object({
   chips: z.array(z.string()).max(4),
   speak: z.boolean(),
   pointAt: z.string().optional(),
+  draft: z.string().min(1).max(4000).optional(),
+  draftApp: z.string().min(1).max(120).optional(),
 });
 export type SayMsg = z.infer<typeof SayMsg>;
 
@@ -90,7 +101,16 @@ export const FocusMsg = z.object({
 });
 export type FocusMsg = z.infer<typeof FocusMsg>;
 
-export const BrainToBody = z.discriminatedUnion('type', [SayMsg, RequestKeyframeMsg, MoodMsg, FocusMsg]);
+export const PasteMsg = z.object({
+  v,
+  type: z.literal('paste'),
+  requestId: z.string().min(1),
+  text: z.string().min(1).max(4000),
+  app: z.string().min(1).max(120),
+});
+export type PasteMsg = z.infer<typeof PasteMsg>;
+
+export const BrainToBody = z.discriminatedUnion('type', [SayMsg, RequestKeyframeMsg, MoodMsg, FocusMsg, PasteMsg]);
 export type BrainToBody = z.infer<typeof BrainToBody>;
 
 export function parseBodyMessage(raw: string): BodyToBrain | null {

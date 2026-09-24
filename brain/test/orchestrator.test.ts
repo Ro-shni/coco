@@ -12,7 +12,7 @@ import { ModelRequestError, ModelUnavailableError, PRIORITY } from '../src/model
 import { NudgePolicy } from '../src/nudge/policy.js';
 import { Orchestrator, type OrchestratorDeps } from '../src/orchestrator.js';
 import type { NudgeDecision } from '../src/persona/decision.js';
-import type { ActivityState, BrainToBody, SayMsg } from '../src/protocol.js';
+import type { ActivityState, BrainToBody, PasteMsg, SayMsg } from '../src/protocol.js';
 import { T0, ctx } from './helpers/messages.js';
 
 const decision: NudgeDecision = { speak: true, kind: 'suggestion', text: 'p99 jumped at 10:40. Check the 10:38 deploy?', chips: ['check deploys'], pointAt: '10:40' };
@@ -25,7 +25,7 @@ function setup(overrides: Partial<OrchestratorDeps> = {}, memory = new Memory(':
   let ids = 0;
   const sent: BrainToBody[] = [];
   const decide = vi.fn<OrchestratorDeps['decider']['decide']>().mockResolvedValue(decision);
-  const reply = vi.fn<OrchestratorDeps['chat']['reply']>().mockResolvedValue('An answer.');
+  const reply = vi.fn<OrchestratorDeps['chat']['reply']>().mockResolvedValue({ text: 'An answer.', draft: null });
   const health = vi.fn<() => Promise<boolean>>().mockResolvedValue(true);
   const policy = new NudgePolicy({ minGapMs: 180_000 });
   const deps: OrchestratorDeps = {
@@ -564,7 +564,7 @@ describe('following through on focus offers', () => {
 
   it('follows through on an offer made in a chat reply', async () => {
     const s = setup();
-    s.reply.mockResolvedValue('Prince asked about pulse mcp. Want me to bring Slack to the front?');
+    s.reply.mockResolvedValue({ text: 'Prince asked about pulse mcp. Want me to bring Slack to the front?', draft: null });
     await s.o.handle(utter('what did I miss?'));
     await s.o.handle(utter('yes please'));
     expect(s.reply).toHaveBeenCalledOnce();
@@ -604,10 +604,147 @@ describe('following through on focus offers', () => {
 
   it('drops the offer when a later Coco message makes no offer', async () => {
     const s = await offered();
-    s.reply.mockResolvedValue('Pulse mcp is the metrics bridge.');
+    s.reply.mockResolvedValue({ text: 'Pulse mcp is the metrics bridge.', draft: null });
     await s.o.handle(utter('what is pulse mcp?'));
     await s.o.handle(utter('sure'));
     expect(focuses(s)).toHaveLength(0);
+  });
+});
+
+describe('draft & paste', () => {
+  const utter = (text: string) => ({ v: 1 as const, type: 'utterance' as const, text, source: 'chat' as const });
+  const pasteMsgs = (s: ReturnType<typeof setup>) => s.sent.filter((m): m is PasteMsg => m.type === 'paste');
+  const draftReply = { text: 'Here you go.', draft: "I'll check the pulse mcp setup tomorrow morning." };
+
+  it('a draft reply on a known, non-private app carries draft, draftApp and a "paste into <App>" chip', async () => {
+    const s = setup();
+    s.reply.mockResolvedValue(draftReply);
+    await s.o.handle(runbook); // app: Arc, private: false
+    await s.o.handle(utter('draft a reply to Prince'));
+    expect(s.says().at(-1)).toMatchObject({
+      kind: 'reply',
+      text: draftReply.text,
+      draft: draftReply.draft,
+      draftApp: 'Arc',
+      chips: ['paste into Arc'],
+    });
+  });
+
+  it('a draft reply with no current context (or a private one) carries the draft but no draftApp/chip', async () => {
+    const s = setup();
+    s.reply.mockResolvedValue(draftReply);
+    await s.o.handle(utter('draft a reply to Prince'));
+    const said = s.says().at(-1)!;
+    expect(said).toMatchObject({ kind: 'reply', text: draftReply.text, draft: draftReply.draft, chips: [] });
+    expect(said.draftApp).toBeUndefined();
+  });
+
+  it('clicking the "paste into <App>" chip on the say that carried the draft sends a paste with the exact draft text', async () => {
+    const s = setup();
+    s.reply.mockResolvedValue(draftReply);
+    await s.o.handle(runbook);
+    await s.o.handle(utter('draft a reply to Prince'));
+    const nudgeId = s.says().at(-1)!.nudgeId;
+    await s.o.handle({ v: 1, type: 'chip', nudgeId, choice: 'paste into Arc' });
+    expect(pasteMsgs(s)).toHaveLength(1);
+    expect(pasteMsgs(s)[0]).toMatchObject({ v: 1, type: 'paste', text: draftReply.draft, app: 'Arc' });
+  });
+
+  it('a chip labelled "paste into" whose nudgeId does not match the draft-carrying say falls through to chat instead', async () => {
+    const s = setup();
+    s.reply.mockResolvedValue(draftReply);
+    await s.o.handle(runbook);
+    await s.o.handle(utter('draft a reply to Prince'));
+    await s.o.handle({ v: 1, type: 'chip', nudgeId: 'stale-id', choice: 'paste into Arc' });
+    expect(pasteMsgs(s)).toHaveLength(0);
+    expect(s.reply).toHaveBeenCalledWith('paste into Arc', expect.anything());
+  });
+
+  it('typing "paste it" (or variants) triggers a paste from the last draft', async () => {
+    const s = setup();
+    s.reply.mockResolvedValue(draftReply);
+    await s.o.handle(runbook);
+    await s.o.handle(utter('draft a reply to Prince'));
+    await s.o.handle(utter('paste it'));
+    expect(pasteMsgs(s)).toHaveLength(1);
+    expect(pasteMsgs(s)[0]).toMatchObject({ v: 1, type: 'paste', text: draftReply.draft, app: 'Arc' });
+    expect(s.reply).toHaveBeenCalledOnce(); // "paste it" itself never reaches chat
+  });
+
+  it('"paste it" with no draft replies that there is nothing to paste, and sends no paste message', async () => {
+    const s = setup();
+    await s.o.handle(utter('paste it'));
+    expect(pasteMsgs(s)).toHaveLength(0);
+    expect(s.says().at(-1)).toMatchObject({ kind: 'reply', text: "There's no draft to paste yet." });
+    expect(s.reply).not.toHaveBeenCalled();
+  });
+
+  it('a stale draft (10+ minutes old) does not trigger a paste', async () => {
+    const s = setup();
+    s.reply.mockResolvedValue(draftReply);
+    await s.o.handle(runbook);
+    await s.o.handle(utter('draft a reply to Prince'));
+    s.advance(10 * 60_000);
+    await s.o.handle(utter('paste it'));
+    expect(pasteMsgs(s)).toHaveLength(0);
+  });
+
+  it('nudges from the decider never carry a draft or a paste chip', async () => {
+    const s = setup();
+    await s.o.handle(runbook);
+    await s.o.tick();
+    const said = s.says().at(-1)!;
+    expect(said.draft).toBeUndefined();
+    expect(said.draftApp).toBeUndefined();
+    expect(said.chips.some((c) => c.toLowerCase().startsWith('paste into'))).toBe(false);
+  });
+
+  it('a successful paste_result confirms the paste and tells the user to press Enter', async () => {
+    const s = setup();
+    s.reply.mockResolvedValue(draftReply);
+    await s.o.handle(runbook);
+    await s.o.handle(utter('draft a reply to Prince'));
+    await s.o.handle(utter('paste it'));
+    const requestId = pasteMsgs(s)[0]!.requestId;
+    await s.o.handle({ v: 1, type: 'paste_result', requestId, ok: true });
+    expect(s.says().at(-1)).toMatchObject({ kind: 'reply', text: 'Pasted into Arc — press Enter to send.' });
+  });
+
+  it('a failed paste_result reports the detail, or a generic reason when none is given', async () => {
+    const s = setup();
+    s.reply.mockResolvedValue(draftReply);
+    await s.o.handle(runbook);
+    await s.o.handle(utter('draft a reply to Prince'));
+    await s.o.handle(utter('paste it'));
+    const requestId = pasteMsgs(s)[0]!.requestId;
+    await s.o.handle({ v: 1, type: 'paste_result', requestId, ok: false, detail: 'Accessibility permission is off' });
+    expect(s.says().at(-1)).toMatchObject({ kind: 'reply', text: "Couldn't paste into Arc: Accessibility permission is off." });
+  });
+
+  it('a failed paste_result with no detail falls back to "no text box found"', async () => {
+    const s = setup();
+    s.reply.mockResolvedValue(draftReply);
+    await s.o.handle(runbook);
+    await s.o.handle(utter('draft a reply to Prince'));
+    await s.o.handle(utter('paste it'));
+    const requestId = pasteMsgs(s)[0]!.requestId;
+    await s.o.handle({ v: 1, type: 'paste_result', requestId, ok: false });
+    expect(s.says().at(-1)).toMatchObject({ kind: 'reply', text: "Couldn't paste into Arc: no text box found." });
+  });
+
+  it('a paste that gets no result within 5s says the paste did not go through', async () => {
+    const s = setup();
+    s.reply.mockResolvedValue(draftReply);
+    await s.o.handle(runbook);
+    await s.o.handle(utter('draft a reply to Prince'));
+    await s.o.handle(utter('paste it'));
+    s.advance(5000);
+    await s.o.pulse();
+    expect(s.says().at(-1)).toMatchObject({ kind: 'reply', text: "The paste didn't go through." });
+    // a late result after the timeout is ignored: pending was already cleared
+    const requestId = pasteMsgs(s)[0]!.requestId;
+    await s.o.handle({ v: 1, type: 'paste_result', requestId, ok: true });
+    expect(s.says().at(-1)).toMatchObject({ text: "The paste didn't go through." });
   });
 });
 

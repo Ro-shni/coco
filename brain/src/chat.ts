@@ -1,6 +1,7 @@
 import { silentLogger, type Logger } from './logger.js';
 import type { Memory } from './memory.js';
 import { PRIORITY, type ChatMessage, type ModelGateway } from './model/gateway.js';
+import { claimsDraftExists, extractDraft, type ExtractedDraft } from './persona/drafts.js';
 import { CAPABILITY_RULE, describeScreen, wrapUntrusted } from './persona/prompt.js';
 import { checkReply, claimsUnperformedAction } from './persona/selfcheck.js';
 import type { ContextMsg } from './protocol.js';
@@ -14,6 +15,11 @@ export interface ChatContext {
 const CHAT_MAX_SENTENCES = 6;
 export const CANNOT_ACT_FALLBACK =
   "I can't send or post anything yet — I can only draft text here and bring apps to the front. Want a draft you can paste?";
+const DRAFT_CLAIM_REWRITE_PROMPT =
+  "You said you drafted a reply but didn't include it. Output the exact message inside a ```draft fenced block, then one short line.";
+export const NO_DRAFT_FALLBACK = "I haven't written a draft yet — tell me what you'd like to say and I'll draft it.";
+const DRAFT_RULE =
+  '- When the user wants to reply, answer or send a message, write the exact message they could send inside a ```draft fenced block, then one short line. Never say you sent it; the user will paste and press Enter themselves.';
 
 export class ChatResponder {
   constructor(
@@ -29,24 +35,45 @@ export class ChatResponder {
     },
   ) {}
 
-  async reply(text: string, ctx: ChatContext): Promise<string> {
+  async reply(text: string, ctx: ChatContext): Promise<ExtractedDraft> {
     const { gateway, memory } = this.deps;
     const messages = this.buildMessages(text, ctx);
-    let reply = (await gateway.chat({ messages, priority: PRIORITY.user, temperature: 0.8 })).trim();
-    const check = checkReply({ text: reply, kind: 'reply', incidentMode: ctx.incidentMode, maxSentences: CHAT_MAX_SENTENCES });
+    let raw = (await gateway.chat({ messages, priority: PRIORITY.user, temperature: 0.8 })).trim();
+    let extracted = extractDraft(raw);
+
+    // Honesty check runs on the non-draft text only: the draft is a message the user will send, not a claim Coco is making.
+    const check = checkReply({ text: extracted.text, kind: 'reply', incidentMode: ctx.incidentMode, maxSentences: CHAT_MAX_SENTENCES });
     if (!check.ok) {
       const rewrite: ChatMessage[] = [
         ...messages,
-        { role: 'assistant', content: reply },
+        { role: 'assistant', content: raw },
         { role: 'user', content: `Rewrite that reply fixing: ${check.problems.join('; ')}. Output only the rewritten reply.` },
       ];
-      reply = (await gateway.chat({ messages: rewrite, priority: PRIORITY.user, temperature: 0.7 })).trim();
-      if (claimsUnperformedAction(reply)) reply = CANNOT_ACT_FALLBACK;
+      raw = (await gateway.chat({ messages: rewrite, priority: PRIORITY.user, temperature: 0.7 })).trim();
+      extracted = extractDraft(raw);
+      if (claimsUnperformedAction(extracted.text)) {
+        raw = CANNOT_ACT_FALLBACK;
+        extracted = { text: CANNOT_ACT_FALLBACK, draft: null };
+      }
+    } else if (extracted.draft === null && claimsDraftExists(extracted.text)) {
+      // Consistency check: the model sometimes claims it wrote a draft without actually including one.
+      // Only runs on a reply that passed the honesty check cleanly — an honesty rewrite's outcome stands as final.
+      const rewrite: ChatMessage[] = [
+        ...messages,
+        { role: 'assistant', content: raw },
+        { role: 'user', content: DRAFT_CLAIM_REWRITE_PROMPT },
+      ];
+      raw = (await gateway.chat({ messages: rewrite, priority: PRIORITY.user, temperature: 0.7 })).trim();
+      extracted = extractDraft(raw);
+      if (extracted.draft === null) {
+        extracted = { text: NO_DRAFT_FALLBACK, draft: null };
+      }
     }
+
     const now = this.deps.clock();
     memory.addTurn('user', text, now);
-    memory.addTurn('assistant', reply, now);
-    return reply;
+    memory.addTurn('assistant', extracted.text, now);
+    return extracted;
   }
 
   private buildMessages(text: string, ctx: ChatContext): ChatMessage[] {
@@ -62,6 +89,7 @@ export class ChatResponder {
       "- If you don't know, say so in one line.",
       '- The only action you can take is bringing an app or window to the front, which happens automatically when the user says things like "go to Slack". You cannot type, click, move windows, send messages, or change tabs or channels — say so plainly instead of pretending.',
       `- ${CAPABILITY_RULE}`,
+      DRAFT_RULE,
     ].join('\n');
     const screen = ctx.current && !ctx.current.private ? `\n${wrapUntrusted('screen', describeScreen(ctx.current))}` : '';
     const history = this.deps.memory

@@ -11,9 +11,10 @@ import type { Logger } from './logger.js';
 import type { Memory, NudgeOutcome } from './memory.js';
 import { ModelUnavailableError, PRIORITY, type ModelGateway, type Priority } from './model/gateway.js';
 import { MUTE_MS, nextLocalMidnight, type NudgePolicy } from './nudge/policy.js';
+import type { ExtractedDraft } from './persona/drafts.js';
 import type { NudgeDecision } from './persona/decision.js';
 import type { DecideInput } from './persona/decider.js';
-import type { ActivityState, BodyToBrain, BrainToBody, ContextMsg, FocusResultMsg, KeyframeMsg, Mood, SayKind } from './protocol.js';
+import type { ActivityState, BodyToBrain, BrainToBody, ContextMsg, FocusResultMsg, KeyframeMsg, Mood, PasteResultMsg, SayKind } from './protocol.js';
 
 export interface OrchestratorDeps {
   send: (msg: BrainToBody) => void;
@@ -25,7 +26,7 @@ export interface OrchestratorDeps {
   policy: NudgePolicy;
   triggers: TriggerDeduper;
   decider: { decide(input: DecideInput, priority: Priority): Promise<NudgeDecision | null> };
-  chat: { reply(text: string, ctx: ChatContext): Promise<string> };
+  chat: { reply(text: string, ctx: ChatContext): Promise<ExtractedDraft> };
   memory: Memory;
   gateway: Pick<ModelGateway, 'health'>;
   keyframesEnabled: boolean;
@@ -56,9 +57,27 @@ interface PendingOffer {
   at: number;
 }
 
+/** The most recent draft Coco offered to paste, from the say ("id") that carried it. */
+interface PendingDraft {
+  id: string;
+  text: string;
+  app: string;
+  at: number;
+}
+
+interface PendingPaste {
+  requestId: string;
+  app: string;
+  at: number;
+}
+
 const KEYFRAME_FRESH_MS = 60_000;
 const OFFER_TTL_MS = 120_000;
 const FOCUS_TIMEOUT_MS = 5000;
+const DRAFT_TTL_MS = 10 * 60_000;
+const PASTE_TIMEOUT_MS = 5000;
+/** "paste", "paste it", "paste that", "paste the draft", "paste into <App>" — the only utterances that trigger a paste. */
+const PASTE_UTTERANCE = /^(paste( it| that| the draft)?|paste into \w+)[.! ]*$/i;
 const MUTED_STATE_KEY = 'mutedUntil';
 const RECENT_TEXTS = 20;
 const PENDING_TRIGGER_TTL_MS = 10 * 60_000;
@@ -97,6 +116,9 @@ export class Orchestrator {
   private pendingFocus: PendingFocus | undefined;
   /** A "bring X to the front" offer Coco just made; a bare "sure" within OFFER_TTL_MS accepts it. */
   private pendingOffer: PendingOffer | undefined;
+  /** The most recent draft Coco offered to paste (non-private context only); stale after DRAFT_TTL_MS. */
+  private lastDraft: PendingDraft | undefined;
+  private pendingPaste: PendingPaste | undefined;
   private recentTexts: ReadonlyMap<string, string> = new Map();
   private deciding = false;
   private mood: Mood | undefined;
@@ -128,6 +150,8 @@ export class Orchestrator {
         return this.onChip(msg.nudgeId, msg.choice);
       case 'focus_result':
         return this.onFocusResult(msg);
+      case 'paste_result':
+        return this.onPasteResult(msg);
     }
   }
 
@@ -141,6 +165,7 @@ export class Orchestrator {
     const now = this.d.clock();
     this.expirePending(now);
     this.expirePendingFocus(now);
+    this.expirePendingPaste(now);
     this.clearStalePendingTrigger(now);
     this.maybeRequestKeyframe(now);
     return this.retryPendingTrigger();
@@ -218,6 +243,7 @@ export class Orchestrator {
     this.resolveAll('engaged');
     const offer = this.takeOffer(now);
     if (offer && isAffirmation(text)) return this.startFocus({ type: 'focus', target: offer.target, kind: offer.kind }, text, now);
+    if (PASTE_UTTERANCE.test(text.trim())) return this.triggerPaste(now);
     const command = text.trim().toLowerCase();
     if (command === SHH) return this.mute(now + MUTE_MS, TEXT.muted30);
     if (command === SHH_TODAY) return this.mute(nextLocalMidnight(now), TEXT.mutedToday);
@@ -261,6 +287,11 @@ export class Orchestrator {
       return command === SHH ? this.mute(now + MUTE_MS, TEXT.muted30) : this.mute(nextLocalMidnight(now), TEXT.mutedToday);
     }
     if (command === DISMISS) return this.resolve(id, 'ignored');
+    if (command.startsWith('paste into') && this.lastDraft?.id === id) {
+      this.resolve(id, 'engaged');
+      this.triggerPaste(now);
+      return;
+    }
     this.resolve(id, 'engaged');
     const original = this.recentTexts.get(id);
     await this.answer(original ? `I clicked "${choice}" on what you said: "${original}"` : choice);
@@ -428,14 +459,60 @@ export class Orchestrator {
         incidentMode: isIncident(cur?.msg),
       });
       this.announceRecoveryIfNeeded();
-      this.say(reply, 'reply');
-      this.rememberOffer(reply);
+      this.deliverChatReply(reply, cur?.msg);
+      this.rememberOffer(reply.text);
     } catch (err) {
       const wasOnline = this.online;
       this.onModelError(err);
       if (!(err instanceof ModelUnavailableError)) this.say(TEXT.genericError, 'reply');
       else if (!wasOnline) this.say(TEXT.offlineReply, 'reply');
     }
+  }
+
+  /** Sends the chat reply as a say; when it carries a draft and the current context is a known, non-private app, attaches draftApp/the paste chip and remembers it as lastDraft. */
+  private deliverChatReply(reply: ExtractedDraft, current: ContextMsg | undefined): void {
+    if (!reply.draft) {
+      this.lastDraft = undefined;
+      this.say(reply.text, 'reply');
+      return;
+    }
+    const app = current && !current.private ? current.app : undefined;
+    if (!app) {
+      this.lastDraft = undefined;
+      this.say(reply.text, 'reply', { draft: reply.draft });
+      return;
+    }
+    const id = this.say(reply.text, 'reply', { draft: reply.draft, draftApp: app, chips: [`paste into ${app}`] });
+    this.lastDraft = { id, text: reply.draft, app, at: this.d.clock() };
+  }
+
+  /** Pastes the current draft, or explains there isn't one (missing or stale). The ONLY entry point for the paste flow. */
+  private triggerPaste(now: number): void {
+    const draft = this.lastDraft;
+    if (!draft || now - draft.at >= DRAFT_TTL_MS) {
+      this.say("There's no draft to paste yet.", 'reply');
+      return;
+    }
+    const requestId = this.d.newId();
+    this.pendingPaste = { requestId, app: draft.app, at: now };
+    this.d.send({ v: 1, type: 'paste', requestId, text: draft.text, app: draft.app });
+  }
+
+  private onPasteResult(msg: PasteResultMsg): void {
+    const p = this.pendingPaste;
+    if (!p || p.requestId !== msg.requestId) return;
+    this.pendingPaste = undefined;
+    const text = msg.ok
+      ? `Pasted into ${p.app} — press Enter to send.`
+      : `Couldn't paste into ${p.app}: ${msg.detail ?? 'no text box found'}.`;
+    this.say(text, 'reply');
+  }
+
+  private expirePendingPaste(now: number): void {
+    const p = this.pendingPaste;
+    if (!p || now - p.at < PASTE_TIMEOUT_MS) return;
+    this.pendingPaste = undefined;
+    this.say("The paste didn't go through.", 'reply');
   }
 
   // ---- health & mood ----------------------------------------------------------
@@ -506,7 +583,24 @@ export class Orchestrator {
     this.d.send({ v: 1, type: 'mood', mood });
   }
 
-  private say(text: string, kind: Extract<SayKind, 'status' | 'reply'>): void {
-    this.d.send({ v: 1, type: 'say', nudgeId: this.d.newId(), text, kind, chips: [], speak: false });
+  /** Sends a status/reply say. Returns the nudgeId, so callers can correlate a later "paste into <App>" chip with the draft it belongs to. */
+  private say(
+    text: string,
+    kind: Extract<SayKind, 'status' | 'reply'>,
+    extra?: { chips?: readonly string[]; draft?: string; draftApp?: string },
+  ): string {
+    const id = this.d.newId();
+    this.d.send({
+      v: 1,
+      type: 'say',
+      nudgeId: id,
+      text,
+      kind,
+      chips: extra?.chips ? [...extra.chips] : [],
+      speak: false,
+      ...(extra?.draft ? { draft: extra.draft } : {}),
+      ...(extra?.draftApp ? { draftApp: extra.draftApp } : {}),
+    });
+    return id;
   }
 }
