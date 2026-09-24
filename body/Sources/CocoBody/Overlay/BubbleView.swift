@@ -10,6 +10,9 @@ struct BubbleView: View {
     @ObservedObject var model: BubbleModel
     var onChip: (String) -> Void
     var onClose: () -> Void
+    /// Lavender chips matching Coco's headphones (#EFE6FF / #6B4BB8).
+    private static let chipBackground = Color(.sRGB, red: 0xEF / 255, green: 0xE6 / 255, blue: 0xFF / 255, opacity: 1)
+    private static let chipText = Color(.sRGB, red: 0x6B / 255, green: 0x4B / 255, blue: 0xB8 / 255, opacity: 1)
 
     var body: some View {
         VStack(alignment: .leading, spacing: 8) {
@@ -32,8 +35,8 @@ struct BubbleView: View {
                             .font(.system(size: 11, weight: .medium))
                             .padding(.horizontal, 9)
                             .padding(.vertical, 3)
-                            .background(Capsule().fill(Color.purple.opacity(0.12)))
-                            .foregroundStyle(Color.purple)
+                            .background(Capsule().fill(Self.chipBackground))
+                            .foregroundStyle(Self.chipText)
                     }
                 }
             }

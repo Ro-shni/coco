@@ -9,7 +9,7 @@ final class OverlayController {
 
     private let characterModel = CharacterModel()
     private let bubbleModel = BubbleModel()
-    private let characterPanel = OverlayPanel(size: CGSize(width: 60, height: 60))
+    private let characterPanel = OverlayPanel(size: OverlayController.characterSize)
     private let bubblePanel = OverlayPanel(size: CGSize(width: 300, height: 120))
     private let highlight = HighlightPanel()
     private var presence = PresenceMachine()
@@ -18,8 +18,11 @@ final class OverlayController {
     private var homeSpec: HomeSpec
     private var dragTracker = DragTracker()
     private var isDragging = false
-    private static let characterSize = CGSize(width: 60, height: 60)
-    private static let cursorOffset = CGPoint(x: 24, y: -72)
+    /// Panel holding the 64 pt character plus its glow margin.
+    private static let characterSize = CGSize(width: CharacterView.characterPoints + 2 * CharacterView.margin,
+                                              height: CharacterView.characterPoints + 2 * CharacterView.margin)
+    /// Panel top sits 12 pt below the cursor, to its right.
+    private static let cursorOffset = CGPoint(x: 24, y: -12 - characterSize.height)
     private static let homeDefaultsKey = "coco.home"
 
     init() {
@@ -89,8 +92,10 @@ final class OverlayController {
     }
 
     private func frameTick() {
-        presence.tick(now: Date().timeIntervalSince1970)
+        let now = Date().timeIntervalSince1970
+        presence.tick(now: now)
         apply()
+        characterModel.tick(now: now)
         let mouse = NSEvent.mouseLocation
         let center = CGPoint(x: characterPanel.frame.midX, y: characterPanel.frame.midY)
         let dx = mouse.x - center.x, dy = mouse.y - center.y
@@ -99,6 +104,8 @@ final class OverlayController {
     }
 
     private func apply() {
+        let speaking = presence.state == .speaking
+        if characterModel.speaking != speaking { characterModel.speaking = speaking }
         switch presence.state {
         case .speaking:
             characterModel.dimmed = false
