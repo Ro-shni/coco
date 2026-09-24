@@ -20,13 +20,18 @@ const LEAD = `(?:${ADVERB}[,!]?\\s+)*`;
 /** Things Coco might claim to have sent: "it", "that", "all", "your message", "the reply"... */
 const SUBJECT = "(?:it|that|this|all|everything|(?:the|your|my)?\\s*(?:message|reply|approval|draft|response|dm|email|note|pr|comment|update)s?)";
 const AUX = "(?:'s been|'s|\\s+(?:is|was|are|were|got|has been|have been))";
+/** What may follow a bare participle: clause end (or trailing punctuation/emoji), or an object, recipient or particle. */
+const BARE_FOLLOW =
+  "(?=\\s*(?:$|[^\\w\\s])|\\s+(?:it|that|them|this|the (?:message|reply|draft|approval|note|dm)|to\\s+\\S+|over|off|through|across)\\b)";
 const CLAIM_FORMS: readonly { form: RegExp; inQuestions: boolean }[] = [
   // (a) first person: "I sent", "I've just replied", "We've pinged"
   { form: new RegExp(`\\b(?:i|we)(?:'ve|'d| have| had)?\\s+(?:${ADVERB}\\s+)*(?:${COMPLETION_VERB})\\b`, 'i'), inQuestions: true },
   // (b) passive/stative about the thing: "It's sent", "Message sent to Prince", "Your message has been sent" (not "... sent by pagerduty")
   { form: new RegExp(`^${LEAD}${SUBJECT}${AUX}?\\s+(?:${ADVERB}\\s+)*(?:${COMPLETION_VERB})\\b(?!\\s+by\\b)`, 'i'), inQuestions: true },
   // (c)/(d) bare or elliptical completion at clause start: "Sent to Prince", "Just sent it over", "Done, posted it", "Approved ✅"
-  { form: new RegExp(`^${LEAD}(?:${COMPLETION_VERB})\\b`, 'i'), inQuestions: false },
+  // Only when the participle ends the clause or takes an object/recipient/particle, so factual
+  // nudges ("Deployed at 10:38", "Merged 20 minutes ago", "Approved by Prince") are not claims.
+  { form: new RegExp(`^${LEAD}(?:${COMPLETION_VERB})${BARE_FOLLOW}`, 'i'), inQuestions: false },
   // (e) a clause that is just "Done"
   { form: /^done[!.]*$/i, inQuestions: false },
 ];

@@ -125,5 +125,38 @@ describe('claimsUnperformedAction', () => {
       expect(r.problems.join()).toMatch(/^claims an action you did not perform: "/);
     },
   );
+
+  const factualNudges = [
+    'Deployed at 10:38, p99 jumped from 120ms to 900ms.',
+    'Merged 20 minutes ago, the canary is at 10%.',
+    'Posted in #devops-oncall: vmselect is down.',
+    'Approved by Prince, waiting on CI.',
+    'Scheduled for 21:12 tonight.',
+  ];
+
+  it.each(factualNudges)('does not flag a factual nudge that opens with a participle: %s', (text) => {
+    expect(claimsUnperformedAction(text)).toBeNull();
+  });
+
+  it.each(factualNudges)('lets a factual nudge through checkReply: %s', (text) => {
+    expect(checkReply({ ...base, text })).toEqual({ ok: true, problems: [] });
+  });
+
+  it.each([
+    'Message sent!',
+    'Just sent it over',
+    "It's sent.",
+    "That's sent.",
+    'All sent.',
+    'Message sent to Prince.',
+    'Your message has been sent.',
+    "Sent to Prince. He's waiting for the approval.",
+    'Done — approved.',
+    'Approved ✅',
+    'Posted it.',
+    'Sent that over to Prince.',
+  ])('still flags a bare completion with an object, recipient or clause end: %s', (text) => {
+    expect(claimsUnperformedAction(text)).not.toBeNull();
+  });
 });
 
