@@ -73,8 +73,12 @@ public struct SayPayload: Codable, Equatable, Sendable {
     public var chips: [String]
     public var speak: Bool
     public var pointAt: String?
-    public init(nudgeId: String, text: String, kind: SayKind, chips: [String], speak: Bool, pointAt: String? = nil) {
-        self.nudgeId = nudgeId; self.text = text; self.kind = kind; self.chips = chips; self.speak = speak; self.pointAt = pointAt
+    public var draft: String?
+    public var draftApp: String?
+    public init(nudgeId: String, text: String, kind: SayKind, chips: [String], speak: Bool, pointAt: String? = nil,
+                draft: String? = nil, draftApp: String? = nil) {
+        self.nudgeId = nudgeId; self.text = text; self.kind = kind; self.chips = chips; self.speak = speak
+        self.pointAt = pointAt; self.draft = draft; self.draftApp = draftApp
     }
 }
 
@@ -108,6 +112,24 @@ public struct FocusResultPayload: Codable, Equatable, Sendable {
     }
 }
 
+public struct PastePayload: Codable, Equatable, Sendable {
+    public var requestId: String
+    public var text: String
+    public var app: String
+    public init(requestId: String, text: String, app: String) {
+        self.requestId = requestId; self.text = text; self.app = app
+    }
+}
+
+public struct PasteResultPayload: Codable, Equatable, Sendable {
+    public var requestId: String
+    public var ok: Bool
+    public var detail: String?
+    public init(requestId: String, ok: Bool, detail: String? = nil) {
+        self.requestId = requestId; self.ok = ok; self.detail = detail
+    }
+}
+
 private enum EnvelopeKeys: String, CodingKey { case v, type }
 
 private func decodeEnvelope(_ decoder: Decoder) throws -> (KeyedDecodingContainer<EnvelopeKeys>, String) {
@@ -132,6 +154,7 @@ public enum BodyToBrain: Codable, Equatable, Sendable {
     case utterance(UtterancePayload)
     case chip(ChipPayload)
     case focusResult(FocusResultPayload)
+    case pasteResult(PasteResultPayload)
 
     public init(from decoder: Decoder) throws {
         let (c, type) = try decodeEnvelope(decoder)
@@ -142,6 +165,7 @@ public enum BodyToBrain: Codable, Equatable, Sendable {
         case "utterance": self = .utterance(try UtterancePayload(from: decoder))
         case "chip": self = .chip(try ChipPayload(from: decoder))
         case "focus_result": self = .focusResult(try FocusResultPayload(from: decoder))
+        case "paste_result": self = .pasteResult(try PasteResultPayload(from: decoder))
         default: throw DecodingError.dataCorruptedError(forKey: .type, in: c, debugDescription: "unknown type \(type)")
         }
     }
@@ -154,6 +178,7 @@ public enum BodyToBrain: Codable, Equatable, Sendable {
         case .utterance(let p): try encodeEnvelope(encoder, type: "utterance"); try p.encode(to: encoder)
         case .chip(let p): try encodeEnvelope(encoder, type: "chip"); try p.encode(to: encoder)
         case .focusResult(let p): try encodeEnvelope(encoder, type: "focus_result"); try p.encode(to: encoder)
+        case .pasteResult(let p): try encodeEnvelope(encoder, type: "paste_result"); try p.encode(to: encoder)
         }
     }
 }
@@ -163,6 +188,7 @@ public enum BrainToBody: Codable, Equatable, Sendable {
     case requestKeyframe(RequestKeyframePayload)
     case mood(MoodPayload)
     case focus(FocusPayload)
+    case paste(PastePayload)
 
     public init(from decoder: Decoder) throws {
         let (c, type) = try decodeEnvelope(decoder)
@@ -171,6 +197,7 @@ public enum BrainToBody: Codable, Equatable, Sendable {
         case "request_keyframe": self = .requestKeyframe(try RequestKeyframePayload(from: decoder))
         case "mood": self = .mood(try MoodPayload(from: decoder))
         case "focus": self = .focus(try FocusPayload(from: decoder))
+        case "paste": self = .paste(try PastePayload(from: decoder))
         default: throw DecodingError.dataCorruptedError(forKey: .type, in: c, debugDescription: "unknown type \(type)")
         }
     }
@@ -181,6 +208,7 @@ public enum BrainToBody: Codable, Equatable, Sendable {
         case .requestKeyframe(let p): try encodeEnvelope(encoder, type: "request_keyframe"); try p.encode(to: encoder)
         case .mood(let p): try encodeEnvelope(encoder, type: "mood"); try p.encode(to: encoder)
         case .focus(let p): try encodeEnvelope(encoder, type: "focus"); try p.encode(to: encoder)
+        case .paste(let p): try encodeEnvelope(encoder, type: "paste"); try p.encode(to: encoder)
         }
     }
 }

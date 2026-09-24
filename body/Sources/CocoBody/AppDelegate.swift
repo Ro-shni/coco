@@ -63,6 +63,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         }
         overlay.onChip = { [weak self] id, choice in self?.brain.send(.chip(ChipPayload(nudgeId: id, choice: choice))) }
         overlay.onOpenChat = { [weak self] in self?.chat.show() }
+        chat.onChip = { [weak self] id, choice in self?.brain.send(.chip(ChipPayload(nudgeId: id, choice: choice))) }
         chat.onSend = { [weak self] text in
             guard let self else { return }
             let wasTruncated = text.count > Self.chatMaxChars
@@ -79,7 +80,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private func handle(_ msg: BrainToBody) {
         switch msg {
         case .say(let say):
-            chat.append(fromUser: false, text: say.text)
+            chat.append(fromUser: false, text: say.text, nudgeId: say.nudgeId, draft: say.draft, draftApp: say.draftApp)
             if say.kind == .reply && chat.isVisible { return }  // the chat window already shows it
             overlay.show(say, anchor: say.pointAt.flatMap { perception.anchorRect(for: $0) })
         case .requestKeyframe:
@@ -89,6 +90,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         case .focus(let f):
             let matched = WindowFocus.focus(target: f.target, kind: f.kind)
             brain.send(.focusResult(FocusResultPayload(requestId: f.requestId, ok: matched != nil, matched: matched)))
+        case .paste(let p):
+            Paster.paste(text: p.text, intoApp: p.app) { [weak self] ok, detail in
+                self?.brain.send(.pasteResult(PasteResultPayload(requestId: p.requestId, ok: ok, detail: detail)))
+            }
         }
     }
 

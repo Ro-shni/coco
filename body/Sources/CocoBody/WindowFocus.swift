@@ -16,7 +16,9 @@ enum WindowFocus {
         }
     }
 
-    private static func candidateApps() -> [NSRunningApplication] {
+    /// Running regular (Dock-visible) apps other than Coco itself. Shared with Paster for resolving which
+    /// app to paste into.
+    static func candidateApps() -> [NSRunningApplication] {
         NSWorkspace.shared.runningApplications.filter {
             $0.activationPolicy == .regular && $0.bundleIdentifier != Bundle.main.bundleIdentifier
         }
