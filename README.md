@@ -24,7 +24,7 @@ Then rebuild and grant permissions again.
 - Coco sits in the bottom-right corner. Click it to chat.
 - When it speaks, click a chip, or `shh` to mute for 30 minutes. Type `shh for today` or `unmute` in chat.
 - `⌃⌥P` pauses and resumes watching. The menu-bar `●` has the same controls.
-- Edit `config/persona.md` to change its personality (hot-reloaded), `config/config.yaml` for timing and your name/Slack handles, `config/privacy.json` for apps and sites Coco never reads.
+- Config lives in `~/Library/Application Support/Coco/config` (seeded from this repo's `config/` on first launch, never overwritten after). Edit `persona.md` there to change its personality (hot-reloaded), `config.yaml` for timing and your name/Slack handles, `privacy.json` for apps and sites Coco never reads. To push edits you made in the repo's `config/` instead, run `./scripts/sync-config.sh` (this does overwrite).
 
 ## Develop
 

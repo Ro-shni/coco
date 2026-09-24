@@ -7,20 +7,27 @@ struct CocoPaths {
     let supportDir: URL
     let logsDir: URL
 
-    /// Paths come from env (dev overrides), then CocoPaths.plist written by bundle.sh, then defaults.
+    /// nodePath comes from env (dev override), then CocoPaths.plist written by bundle.sh, then a default.
+    /// brainDir and configDir are derived at runtime, not read from the plist: the app must never depend
+    /// on files in the source repo. brainDir defaults to the app bundle's own Resources/brain (staged by
+    /// bundle.sh); configDir defaults to Application Support so user edits survive rebuilds/reinstalls.
+    /// Both accept an env override for development.
     static func load() -> CocoPaths {
         let env = ProcessInfo.processInfo.environment
         let plist = Bundle.main.url(forResource: "CocoPaths", withExtension: "plist")
             .flatMap { NSDictionary(contentsOf: $0) as? [String: String] } ?? [:]
-        func path(_ key: String, _ envKey: String, _ fallback: String) -> URL {
-            URL(fileURLWithPath: env[envKey] ?? plist[key] ?? fallback)
-        }
         let home = FileManager.default.homeDirectoryForCurrentUser
+        let supportDir = home.appendingPathComponent("Library/Application Support/Coco")
+        let brainDir = env["COCO_BRAIN_DIR"].map { URL(fileURLWithPath: $0) }
+            ?? Bundle.main.resourceURL?.appendingPathComponent("brain")
+            ?? URL(fileURLWithPath: "brain")
+        let configDir = env["COCO_CONFIG_DIR"].map { URL(fileURLWithPath: $0) }
+            ?? supportDir.appendingPathComponent("config")
         return CocoPaths(
-            brainDir: path("brainDir", "COCO_BRAIN_DIR", "brain"),
-            configDir: path("configDir", "COCO_CONFIG_DIR", "config"),
-            nodePath: path("nodePath", "COCO_NODE", "/opt/homebrew/bin/node"),
-            supportDir: home.appendingPathComponent("Library/Application Support/Coco"),
+            brainDir: brainDir,
+            configDir: configDir,
+            nodePath: URL(fileURLWithPath: env["COCO_NODE"] ?? plist["nodePath"] ?? "/opt/homebrew/bin/node"),
+            supportDir: supportDir,
             logsDir: home.appendingPathComponent("Library/Logs/Coco")
         )
     }

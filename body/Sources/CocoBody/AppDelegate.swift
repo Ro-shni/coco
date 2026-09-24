@@ -21,6 +21,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
     func applicationDidFinishLaunching(_ notification: Notification) {
         FileLog.body.info("launching; brain=\(paths.brainDir.path) config=\(paths.configDir.path)")
+        seedConfigIfNeeded()
         let privacy = PrivacyGate.loadConfig(from: paths.configDir.appendingPathComponent("privacy.json"))
         let gate = (try? PrivacyGate(config: privacy)) ?? (try! PrivacyGate(config: .defaults))
         perception = Perception(gate: gate)
@@ -36,6 +37,23 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     }
 
     func applicationWillTerminate(_ notification: Notification) { brain.stop() }
+
+    /// Copies any default config file the user doesn't already have into their config dir.
+    /// Never overwrites an existing file — user edits always win. `config-defaults` is staged
+    /// into the app bundle by bundle.sh; if it's missing (e.g. a dev build without bundling),
+    /// this is a no-op and the user keeps whatever is already in configDir.
+    private func seedConfigIfNeeded() {
+        let fm = FileManager.default
+        try? fm.createDirectory(at: paths.configDir, withIntermediateDirectories: true)
+        guard let defaultsDir = Bundle.main.resourceURL?.appendingPathComponent("config-defaults"),
+              let defaultFiles = try? fm.contentsOfDirectory(atPath: defaultsDir.path) else { return }
+        let existing = Set((try? fm.contentsOfDirectory(atPath: paths.configDir.path)) ?? [])
+        let toSeed = ConfigSeeder.filesToSeed(defaults: defaultFiles, existing: existing)
+        for name in toSeed {
+            try? fm.copyItem(at: defaultsDir.appendingPathComponent(name), to: paths.configDir.appendingPathComponent(name))
+        }
+        FileLog.body.info(toSeed.isEmpty ? "config seed: nothing missing" : "config seed: \(toSeed.joined(separator: ", "))")
+    }
 
     private func wire() {
         brain.onStatus = { [weak self] status in
