@@ -32,7 +32,7 @@ private struct PermissionsView: View {
             }
             Text("After granting Screen Recording, macOS may ask you to quit and reopen Coco.")
                 .font(.caption).foregroundStyle(.secondary)
-            Text("Tip: hold ⌥Space to talk to Coco. Microphone and Speech Recognition are only needed for that.")
+            Text("Tip: hold Right ⌘ to talk to Coco. Microphone and Speech Recognition are only needed for that.")
                 .font(.caption).foregroundStyle(.secondary)
         }
         .padding(20)

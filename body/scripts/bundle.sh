@@ -60,7 +60,7 @@ cat > "$APP/Contents/Info.plist" <<PLIST
   <key>LSMinimumSystemVersion</key><string>14.0</string>
   <key>LSUIElement</key><true/>
   <key>NSHighResolutionCapable</key><true/>
-  <key>NSMicrophoneUsageDescription</key><string>Coco listens only while you hold ⌥Space.</string>
+  <key>NSMicrophoneUsageDescription</key><string>Coco listens only while you hold Right ⌘.</string>
   <key>NSSpeechRecognitionUsageDescription</key><string>Coco turns what you say into text on this Mac.</string>
 </dict></plist>
 PLIST

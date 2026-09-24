@@ -1,23 +1,6 @@
 import Testing
 @testable import CocoCore
 
-@Suite struct HotkeyMatcherTests {
-    @Test func optionSpaceIsPushToTalk() {
-        #expect(HotkeyMatcher.isPushToTalk(keyCode: 49, flags: [.option]))
-    }
-    @Test func spaceWithoutOptionIsNot() {
-        #expect(!HotkeyMatcher.isPushToTalk(keyCode: 49, flags: []))
-    }
-    @Test func extraModifiersAreRejected() {
-        #expect(!HotkeyMatcher.isPushToTalk(keyCode: 49, flags: [.option, .command]))
-        #expect(!HotkeyMatcher.isPushToTalk(keyCode: 49, flags: [.option, .control]))
-        #expect(!HotkeyMatcher.isPushToTalk(keyCode: 49, flags: [.option, .shift]))
-    }
-    @Test func otherKeysAreRejected() {
-        #expect(!HotkeyMatcher.isPushToTalk(keyCode: 35, flags: [.option]))
-    }
-}
-
 @Suite struct SpeakPolicyTests {
     func say(kind: SayKind = .reply, speak: Bool = true) -> SayPayload {
         SayPayload(nudgeId: "n1", text: "hi", kind: kind, chips: [], speak: speak)

@@ -1,23 +1,6 @@
 import Foundation
 
-/// AppKit-free mirror of the modifier flags push-to-talk cares about, so matching is testable.
-public struct ModifierFlagsLike: OptionSet, Sendable {
-    public let rawValue: UInt8
-    public init(rawValue: UInt8) { self.rawValue = rawValue }
-    public static let shift = ModifierFlagsLike(rawValue: 1 << 0)
-    public static let control = ModifierFlagsLike(rawValue: 1 << 1)
-    public static let option = ModifierFlagsLike(rawValue: 1 << 2)
-    public static let command = ModifierFlagsLike(rawValue: 1 << 3)
-}
-
-public enum HotkeyMatcher {
-    public static let spaceKeyCode: UInt16 = 49
-
-    /// ⌥Space with Option only (no ⌘/⌃/⇧).
-    public static func isPushToTalk(keyCode: UInt16, flags: ModifierFlagsLike) -> Bool {
-        keyCode == spaceKeyCode && flags == [.option]
-    }
-}
+/// Push-to-talk's own hold-and-cancel timing lives in `ModifierHoldDetector`; see ModifierHoldDetector.swift.
 
 public enum SpeakPolicy {
     /// Whether Coco should say `say` out loud. Never while the user is talking, in a call or sharing;

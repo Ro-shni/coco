@@ -36,7 +36,7 @@ final class StatusMenu: NSObject, NSMenuDelegate {
         let voicesItem = NSMenuItem(title: "Voice", action: nil, keyEquivalent: "")
         voicesItem.submenu = voicesMenu
         menu.addItem(voicesItem)
-        menu.addItem(withTitle: "Hold ⌥Space to talk", action: nil, keyEquivalent: "").isEnabled = false
+        menu.addItem(withTitle: "Hold Right ⌘ to talk", action: nil, keyEquivalent: "").isEnabled = false
         menu.addItem(.separator())
         menu.addItem(withTitle: "Quit Coco", action: #selector(NSApplication.terminate(_:)), keyEquivalent: "q")
         item.menu = menu

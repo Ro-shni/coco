@@ -7,7 +7,7 @@ import Speech
 enum Permission: CaseIterable {
     case screenRecording, accessibility, inputMonitoring, microphone, speechRecognition
 
-    /// Voice permissions are optional: Coco works without them (only ⌥Space talk is off), so they don't
+    /// Voice permissions are optional: Coco works without them (only Right ⌘ talk is off), so they don't
     /// count towards `allGranted` and never pop the permissions window at launch.
     var isRequired: Bool { self != .microphone && self != .speechRecognition }
 
@@ -26,7 +26,7 @@ enum Permission: CaseIterable {
         case .screenRecording: return "Read text on the window you're looking at (stays on this Mac)."
         case .accessibility: return "Know the focused app, window title, selection and URL."
         case .inputMonitoring: return "Count keystrokes (never which keys) so Coco stays quiet while you type."
-        case .microphone: return "Hear you only while you hold ⌥Space."
+        case .microphone: return "Hear you only while you hold Right ⌘."
         case .speechRecognition: return "Turn what you say into text, on this Mac only (never sent anywhere)."
         }
     }

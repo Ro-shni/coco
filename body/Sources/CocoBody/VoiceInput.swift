@@ -147,7 +147,7 @@ final class VoiceInput {
         case .authorized: break
         case .notDetermined:
             SFSpeechRecognizer.requestAuthorization { _ in }
-            onProblem?("Allow Speech Recognition, then hold ⌥Space again.")
+            onProblem?("Allow Speech Recognition, then hold Right ⌘ again.")
             return false
         default:
             onProblem?("Speech Recognition is off for Coco. Turn it on in Permissions….")
@@ -157,7 +157,7 @@ final class VoiceInput {
         case .authorized: return true
         case .notDetermined:
             AVCaptureDevice.requestAccess(for: .audio) { _ in }
-            onProblem?("Allow the microphone, then hold ⌥Space again.")
+            onProblem?("Allow the microphone, then hold Right ⌘ again.")
             return false
         default:
             onProblem?("Microphone access is off for Coco. Turn it on in Permissions….")

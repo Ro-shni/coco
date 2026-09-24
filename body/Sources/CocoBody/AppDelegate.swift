@@ -14,8 +14,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private let voiceInput = VoiceInput()
     private let voiceOutput = VoiceOutput()
     private let pushToTalk = PushToTalkHotkey()
-    /// True from ⌥Space down until the final transcript arrives.
+    /// True from the Right ⌘ hold starting until the final transcript arrives.
     private var recording = false
+    /// True while a cancelled recording's final transcript is still in flight — `endListening` must drop
+    /// it instead of sending, since `cancelListening` already tore down the UI/sensor state itself.
+    private var discardingVoice = false
     private var lastActivity: ActivityState = .reading
     private var hotkeyMonitors: [Any] = []
     private static let pauseKeyCode: UInt16 = 35  // "P"
@@ -108,6 +111,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private func wireVoice() {
         pushToTalk.onDown = { [weak self] in self?.beginListening() }
         pushToTalk.onUp = { [weak self] in self?.voiceInput.stop() }
+        pushToTalk.onCancel = { [weak self] in self?.cancelListening() }
+        pushToTalk.onPermissionMissing = { [weak self] text in self?.overlay.showLocal(text) }
         voiceInput.onPartial = { [weak self] text in self?.overlay.setListeningText(text) }
         voiceInput.onFinal = { [weak self] text in self?.endListening(text) }
         voiceInput.onProblem = { [weak self] text in self?.overlay.showLocal(text) }
@@ -129,6 +134,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     }
 
     private func endListening(_ text: String) {
+        guard !discardingVoice else {
+            discardingVoice = false  // cancelListening already tore down recording/selfRecording/overlay
+            return
+        }
         recording = false
         sensor.selfRecording = false
         if !text.isEmpty { overlay.setListeningText(text) }  // the final transcript can differ from the last partial
@@ -136,6 +145,18 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         guard !text.isEmpty else { return }
         chat.append(fromUser: true, text: "🎙 \(text)")  // like typed lines, marked as spoken
         brain.send(.utterance(UtterancePayload(text: String(text.prefix(Self.chatMaxChars)), source: .voice)))
+    }
+
+    /// Right ⌘ was released early by an interruption (another key or modifier): stop capturing and discard
+    /// whatever was heard — no utterance is sent, no 🎙 chat line is added. `voiceInput.stop()` still runs
+    /// its normal teardown; `endListening` sees `discardingVoice` and drops that transcript when it arrives.
+    private func cancelListening() {
+        guard recording else { return }
+        discardingVoice = true
+        recording = false
+        sensor.selfRecording = false
+        overlay.setListening(false, heardSomething: false)
+        voiceInput.stop()
     }
 
     private func handle(_ msg: BrainToBody) {

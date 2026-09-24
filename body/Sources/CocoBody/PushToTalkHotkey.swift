@@ -1,74 +1,104 @@
-import Carbon.HIToolbox
+import AppKit
+import CocoCore
 
-/// Hold ⌥Space to talk, registered as a Carbon system hotkey: the system consumes the keystroke (it never
-/// reaches the focused app) and no extra permission is needed. Active from the press until the hotkey is
-/// released; auto-repeat presses while held are ignored.
+/// Hold Right ⌘ alone to talk. NSEvent global + local monitors watch `.flagsChanged` and `.keyDown` (a
+/// modifier-only press never types a character, so nothing leaks to the focused app) and drive
+/// `ModifierHoldDetector`'s pure state machine on a periodic tick. The global monitor needs Accessibility;
+/// without it Coco can only see the key while one of its own windows is focused, so `install()` reports
+/// that via `onPermissionMissing` for the caller to surface.
 final class PushToTalkHotkey {
+    /// Right ⌘ was held alone for `ModifierHoldDetector.holdDelay`: start listening.
     var onDown: (() -> Void)?
+    /// Right ⌘ released after listening had started: stop and send what was heard.
     var onUp: (() -> Void)?
+    /// Listening was interrupted (another key or modifier) before release: stop and discard.
+    var onCancel: (() -> Void)?
+    /// The global monitor couldn't be installed — likely missing Accessibility permission.
+    var onPermissionMissing: ((String) -> Void)?
 
-    private(set) var isActive = false
-    private var hotKeyRef: EventHotKeyRef?
-    private var handlerRef: EventHandlerRef?
-    private static let signature: OSType = 0x436F_636F  // 'Coco'
-    private static let hotKeyID: UInt32 = 1
+    private static let tickInterval: TimeInterval = 0.05
 
-    func install() {
-        guard hotKeyRef == nil else { return }
-        var specs = [
-            EventTypeSpec(eventClass: OSType(kEventClassKeyboard), eventKind: UInt32(kEventHotKeyPressed)),
-            EventTypeSpec(eventClass: OSType(kEventClassKeyboard), eventKind: UInt32(kEventHotKeyReleased)),
-        ]
-        let callback: EventHandlerUPP = { _, event, userData in
-            guard let event, let userData else { return OSStatus(eventNotHandledErr) }
-            let hotkey = Unmanaged<PushToTalkHotkey>.fromOpaque(userData).takeUnretainedValue()
-            return hotkey.handle(event)
-        }
-        // passUnretained is safe: the handler is removed in stop()/deinit before this object goes away.
-        let status = InstallEventHandler(GetApplicationEventTarget(), callback, specs.count, &specs,
-                                         Unmanaged.passUnretained(self).toOpaque(), &handlerRef)
-        guard status == noErr else {
-            FileLog.body.warn("push-to-talk: InstallEventHandler failed (\(status))")
-            return
-        }
-        let id = EventHotKeyID(signature: Self.signature, id: Self.hotKeyID)
-        let registered = RegisterEventHotKey(UInt32(kVK_Space), UInt32(optionKey), id, GetApplicationEventTarget(), 0, &hotKeyRef)
-        if registered != noErr {
-            FileLog.body.warn("push-to-talk: ⌥Space is taken by another app (\(registered)); voice hotkey is off")
-            stop()
-        }
+    /// Device-dependent modifier bits (NX_DEVICE*KEYMASK from IOLLEvent.h), carried through in
+    /// `NSEvent.modifierFlags.rawValue`. Undocumented but stable for decades and the standard way to tell
+    /// left and right modifier keys apart — `NSEvent.ModifierFlags`/`kVK_*` alone can't.
+    private enum DeviceMask {
+        static let leftControl: UInt = 0x0001
+        static let leftShift: UInt = 0x0002
+        static let rightShift: UInt = 0x0004
+        static let leftCommand: UInt = 0x0008
+        static let rightCommand: UInt = 0x0010
+        static let leftOption: UInt = 0x0020
+        static let rightOption: UInt = 0x0040
+        static let rightControl: UInt = 0x2000
+        /// Everything that counts as "another modifier" while a lone Right ⌘ hold is in progress.
+        static let others: UInt = leftControl | leftShift | rightShift | leftCommand | leftOption | rightOption | rightControl
     }
 
-    /// Unregisters the hotkey and its handler. Safe to call more than once.
+    private var detector = ModifierHoldDetector()
+    private var globalFlagsMonitor: Any?
+    private var localFlagsMonitor: Any?
+    private var globalKeyMonitor: Any?
+    private var localKeyMonitor: Any?
+    private var tickTimer: Timer?
+
+    /// Installs the monitors and starts the tick timer. Safe to call more than once.
+    func install() {
+        guard tickTimer == nil else { return }
+
+        if let monitor = NSEvent.addGlobalMonitorForEvents(matching: .flagsChanged, handler: { [weak self] in self?.handleFlagsChanged($0) }) {
+            globalFlagsMonitor = monitor
+        } else {
+            FileLog.body.warn("push-to-talk: couldn't install global flagsChanged monitor (Accessibility not granted?)")
+            onPermissionMissing?("Coco needs Accessibility to hear Right ⌘ while another app is focused. Grant it in Permissions….")
+        }
+        globalKeyMonitor = NSEvent.addGlobalMonitorForEvents(matching: .keyDown, handler: { [weak self] _ in self?.handleKeyDown() })
+        localFlagsMonitor = NSEvent.addLocalMonitorForEvents(matching: .flagsChanged) { [weak self] event in
+            self?.handleFlagsChanged(event)
+            return event
+        }
+        localKeyMonitor = NSEvent.addLocalMonitorForEvents(matching: .keyDown) { [weak self] event in
+            self?.handleKeyDown()
+            return event
+        }
+        tickTimer = Timer.scheduledTimer(withTimeInterval: Self.tickInterval, repeats: true) { [weak self] _ in self?.tick() }
+    }
+
+    /// Removes the monitors and stops the tick timer. Safe to call more than once.
     func stop() {
-        if let hotKeyRef { UnregisterEventHotKey(hotKeyRef) }
-        if let handlerRef { RemoveEventHandler(handlerRef) }
-        hotKeyRef = nil
-        handlerRef = nil
-        isActive = false
+        for monitor in [globalFlagsMonitor, globalKeyMonitor, localFlagsMonitor, localKeyMonitor] {
+            if let monitor { NSEvent.removeMonitor(monitor) }
+        }
+        globalFlagsMonitor = nil
+        globalKeyMonitor = nil
+        localFlagsMonitor = nil
+        localKeyMonitor = nil
+        tickTimer?.invalidate()
+        tickTimer = nil
     }
 
     deinit { stop() }
 
-    private func handle(_ event: EventRef) -> OSStatus {
-        var id = EventHotKeyID()
-        let status = GetEventParameter(event, EventParamName(kEventParamDirectObject), EventParamType(typeEventHotKeyID),
-                                       nil, MemoryLayout<EventHotKeyID>.size, nil, &id)
-        guard status == noErr, id.signature == Self.signature, id.id == Self.hotKeyID else {
-            return OSStatus(eventNotHandledErr)
+    private func handleFlagsChanged(_ event: NSEvent) {
+        let raw = UInt(event.modifierFlags.rawValue)
+        let rightCmdDown = raw & DeviceMask.rightCommand != 0
+        let otherModifiersDown = raw & DeviceMask.others != 0
+        dispatch(detector.flagsChanged(keyCode: event.keyCode, rightCmdDown: rightCmdDown, otherModifiersDown: otherModifiersDown))
+    }
+
+    private func handleKeyDown() {
+        dispatch(detector.keyDown())
+    }
+
+    private func tick() {
+        dispatch(detector.tick(now: Date()))
+    }
+
+    private func dispatch(_ action: ModifierHoldDetector.Action) {
+        switch action {
+        case .start: onDown?()
+        case .stopAndSend: onUp?()
+        case .cancelDiscard: onCancel?()
+        case .none: break
         }
-        switch Int(GetEventKind(event)) {
-        case kEventHotKeyPressed:
-            guard !isActive else { break }  // auto-repeat while held
-            isActive = true
-            onDown?()
-        case kEventHotKeyReleased:
-            guard isActive else { break }
-            isActive = false
-            onUp?()
-        default:
-            return OSStatus(eventNotHandledErr)
-        }
-        return noErr
     }
 }
