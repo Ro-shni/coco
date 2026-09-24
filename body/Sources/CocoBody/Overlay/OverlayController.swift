@@ -15,14 +15,20 @@ final class OverlayController {
     private var presence = PresenceMachine()
     private var timer: Timer?
     private var atHome = false
-    private let corner: ScreenGeometry.Corner
+    private var homeSpec: HomeSpec
+    private var dragTracker = DragTracker()
+    private var isDragging = false
     private static let characterSize = CGSize(width: 60, height: 60)
     private static let cursorOffset = CGPoint(x: 24, y: -72)
+    private static let homeDefaultsKey = "coco.home"
 
-    init(corner: ScreenGeometry.Corner = .bottomRight) {
-        self.corner = corner
+    init() {
+        homeSpec = HomePlacement.decode(UserDefaults.standard.data(forKey: Self.homeDefaultsKey))
         characterPanel.contentView = FirstClickHostingView(rootView:
-            CharacterView(model: characterModel, onTap: { [weak self] in self?.onOpenChat?() }))
+            CharacterView(model: characterModel,
+                          onDragBegan: { [weak self] in self?.dragBegan() },
+                          onDragChanged: { [weak self] in self?.dragChanged() },
+                          onDragEnded: { [weak self] in self?.dragEnded() }))
         bubblePanel.contentView = FirstClickHostingView(rootView:
             BubbleView(model: bubbleModel,
                        onChip: { [weak self] chip in self?.chipTapped(chip) },
@@ -59,6 +65,15 @@ final class OverlayController {
         apply()
     }
 
+    /// Saves the given home and animates Coco there.
+    func setHome(_ spec: HomeSpec) {
+        homeSpec = spec
+        UserDefaults.standard.set(HomePlacement.encode(spec), forKey: Self.homeDefaultsKey)
+        moveHome(animated: true)
+    }
+
+    func resetHome() { setHome(HomePlacement.defaultSpec) }
+
     private func chipTapped(_ chip: String) {
         let id = bubbleModel.nudgeId
         presence.onInteraction(now: Date().timeIntervalSince1970)
@@ -90,13 +105,20 @@ final class OverlayController {
         case .home, .busy:
             characterModel.dimmed = presence.state == .busy
             if bubblePanel.isVisible { bubblePanel.orderOut(nil) }
-            if !atHome { moveHome(animated: true) }
+            if !atHome && !isDragging { moveHome(animated: true) }
         }
     }
 
     private func moveHome(animated: Bool) {
-        guard let visible = screenUnderCursor()?.visibleFrame else { return }
-        move(characterPanel, to: ScreenGeometry.homeOrigin(corner: corner, size: Self.characterSize, visibleFrame: visible, margin: 16),
+        let screen: NSScreen?
+        switch homeSpec {
+        case .corner:
+            screen = screenUnderCursor()
+        case .custom(let displayID, _, _):
+            screen = NSScreen.screens.first { Self.screenNumber(for: $0) == displayID } ?? screenUnderCursor()
+        }
+        guard let visible = screen?.visibleFrame else { return }
+        move(characterPanel, to: HomePlacement.origin(for: homeSpec, visibleFrame: visible, size: Self.characterSize, margin: 16),
              animated: animated)
         atHome = true
     }
@@ -104,6 +126,48 @@ final class OverlayController {
     private func screenUnderCursor() -> NSScreen? {
         let mouse = NSEvent.mouseLocation
         return NSScreen.screens.first { $0.frame.contains(mouse) } ?? NSScreen.main
+    }
+
+    private static func screenNumber(for screen: NSScreen) -> UInt32 {
+        (screen.deviceDescription[NSDeviceDescriptionKey("NSScreenNumber")] as? NSNumber)?.uint32Value ?? 0
+    }
+
+    private func dragBegan() {
+        isDragging = true
+        dragTracker.begin(at: NSEvent.mouseLocation)
+    }
+
+    private func dragChanged() {
+        let delta = dragTracker.move(to: NSEvent.mouseLocation)
+        guard dragTracker.isDrag else { return }
+        if bubblePanel.isVisible { bubblePanel.orderOut(nil) }
+        presence.dismiss()
+        var frame = characterPanel.frame
+        frame.origin.x += delta.width
+        frame.origin.y += delta.height
+        characterPanel.setFrame(frame, display: true)
+        atHome = false
+    }
+
+    private func dragEnded() {
+        isDragging = false
+        if dragTracker.isDrag {
+            saveHomeFromCurrentPosition()
+        } else {
+            onOpenChat?()
+        }
+    }
+
+    /// Saves wherever the panel currently sits as the new home, as a fraction of the display its centre is on.
+    private func saveHomeFromCurrentPosition() {
+        let center = CGPoint(x: characterPanel.frame.midX, y: characterPanel.frame.midY)
+        guard let screen = NSScreen.screens.first(where: { $0.frame.contains(center) }) ?? screenUnderCursor() else { return }
+        let displayID = Self.screenNumber(for: screen)
+        let spec = HomePlacement.customSpec(origin: characterPanel.frame.origin, size: characterPanel.frame.size,
+                                             visibleFrame: screen.visibleFrame, displayID: displayID)
+        homeSpec = spec
+        UserDefaults.standard.set(HomePlacement.encode(spec), forKey: Self.homeDefaultsKey)
+        atHome = true
     }
 
     private func move(_ panel: NSPanel, to origin: CGPoint, animated: Bool) {

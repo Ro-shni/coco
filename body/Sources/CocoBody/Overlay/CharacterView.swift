@@ -9,8 +9,11 @@ final class CharacterModel: ObservableObject {
 
 struct CharacterView: View {
     @ObservedObject var model: CharacterModel
-    var onTap: () -> Void
+    var onDragBegan: () -> Void
+    var onDragChanged: () -> Void
+    var onDragEnded: () -> Void
     @State private var bob = false
+    @State private var isDragging = false
 
     var body: some View {
         ZStack {
@@ -25,9 +28,22 @@ struct CharacterView: View {
         .rotationEffect(.degrees(model.mood == .worried ? (bob ? -4 : 4) : 0))
         .animation(.easeInOut(duration: model.mood == .sleepy ? 2.4 : 1.2).repeatForever(autoreverses: true), value: bob)
         .onAppear { bob = true }
-        .onTapGesture(perform: onTap)
+        .gesture(
+            DragGesture(minimumDistance: 0, coordinateSpace: .global)
+                .onChanged { _ in
+                    if !isDragging {
+                        isDragging = true
+                        onDragBegan()
+                    }
+                    onDragChanged()
+                }
+                .onEnded { _ in
+                    isDragging = false
+                    onDragEnded()
+                }
+        )
         .padding(8)
-        .help("Coco: click to chat")
+        .help("Coco: click to chat, drag to move")
     }
 
     private var eye: some View {

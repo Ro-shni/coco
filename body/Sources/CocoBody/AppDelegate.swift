@@ -68,6 +68,14 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         menu.onOpenChat = { [weak self] in self?.chat.show() }
         menu.onPermissions = { [weak self] in self?.permissions.show() }
         menu.onTogglePause = { [weak self] in self?.togglePause() }
+        menu.onSetHome = { [weak self] spec in
+            guard let self else { return }
+            if spec == HomePlacement.defaultSpec {
+                self.overlay.resetHome()
+            } else {
+                self.overlay.setHome(spec)
+            }
+        }
     }
 
     private func handle(_ msg: BrainToBody) {
