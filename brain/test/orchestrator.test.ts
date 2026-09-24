@@ -243,6 +243,61 @@ describe('engagement', () => {
   });
 });
 
+describe('diagnostics logging (counts only)', () => {
+  const spyLog = () => ({ info: vi.fn(), warn: vi.fn(), error: vi.fn() });
+
+  it('logs context_in on the first message, on app change, and on a >50-char ocrChars swing, but not on small swings', async () => {
+    const log = spyLog();
+    const s = setup({ log });
+    await s.o.handle(ctx({ app: 'Chrome', bundleId: 'com.google.Chrome', ocrText: 'a'.repeat(10) }));
+    expect(log.info).toHaveBeenCalledWith('context_in', {
+      app: 'Chrome', bundleId: 'com.google.Chrome', private: false, titleChars: 'supply-prd latency - Grafana'.length,
+      urlPresent: true, selectionChars: 0, ocrChars: 10,
+    });
+
+    log.info.mockClear();
+    await s.o.handle(ctx({ app: 'Chrome', bundleId: 'com.google.Chrome', ocrText: 'a'.repeat(30) })); // +20, under threshold
+    expect(log.info).not.toHaveBeenCalledWith('context_in', expect.anything());
+
+    await s.o.handle(ctx({ app: 'Chrome', bundleId: 'com.google.Chrome', ocrText: 'a'.repeat(90) })); // +60 from last logged, over threshold
+    expect(log.info).toHaveBeenCalledWith('context_in', expect.objectContaining({ ocrChars: 90 }));
+
+    log.info.mockClear();
+    await s.o.handle(ctx({ app: 'Slack', bundleId: 'com.slack.Slack', ocrText: 'a'.repeat(90) })); // app changed, same ocrChars
+    expect(log.info).toHaveBeenCalledWith('context_in', expect.objectContaining({ app: 'Slack', bundleId: 'com.slack.Slack' }));
+  });
+
+  it('logs context_in for private contexts too', async () => {
+    const log = spyLog();
+    const s = setup({ log });
+    await s.o.handle(ctx({ private: true, app: '1Password', bundleId: 'com.agilebits.onepassword7', windowTitle: '', url: undefined, selection: undefined, ocrText: undefined }));
+    expect(log.info).toHaveBeenCalledWith('context_in', {
+      app: '1Password', bundleId: 'com.agilebits.onepassword7', private: true, titleChars: 0, urlPresent: false, selectionChars: 0, ocrChars: 0,
+    });
+  });
+
+  it('logs chat_ctx right before consulting chat.reply', async () => {
+    const log = spyLog();
+    const s = setup({ log });
+    await s.o.handle(runbook);
+    log.info.mockClear();
+    await s.o.handle({ v: 1, type: 'utterance', text: 'what is on my screen?', source: 'chat' });
+    expect(log.info).toHaveBeenCalledWith('chat_ctx', {
+      hasCurrent: true, app: runbook.app, bundleId: runbook.bundleId, private: false, ocrChars: runbook.ocrText!.length, timelineEntries: 1,
+    });
+    expect(s.reply).toHaveBeenCalledOnce();
+  });
+
+  it('logs chat_ctx with hasCurrent=false and no timeline entries when nothing has been seen yet', async () => {
+    const log = spyLog();
+    const s = setup({ log });
+    await s.o.handle({ v: 1, type: 'utterance', text: 'hi', source: 'chat' });
+    expect(log.info).toHaveBeenCalledWith('chat_ctx', {
+      hasCurrent: false, app: undefined, bundleId: undefined, private: undefined, ocrChars: 0, timelineEntries: 0,
+    });
+  });
+});
+
 describe('muting', () => {
   it('shh chip mutes for 30 minutes, persists, and confirms', async () => {
     const s = setup();

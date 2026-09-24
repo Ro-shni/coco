@@ -1,4 +1,4 @@
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
 import { ChatResponder } from '../src/chat.js';
 import { Memory } from '../src/memory.js';
 import { ModelUnavailableError, PRIORITY } from '../src/model/gateway.js';
@@ -44,5 +44,36 @@ describe('ChatResponder', () => {
     const { memory, chat } = make(gw);
     await expect(chat.reply('hi', { timeline: 't', incidentMode: false })).rejects.toBeInstanceOf(ModelUnavailableError);
     expect(memory.recentTurns(5)).toEqual([]);
+  });
+
+  it('logs chat_prompt diagnostics (counts only) through an injected logger when a screen block is included', async () => {
+    const gw = new ScriptedGateway(() => 'ok.');
+    const memory = new Memory(':memory:');
+    const logger = { info: vi.fn(), warn: vi.fn(), error: vi.fn() };
+    const chat = new ChatResponder({ gateway: gw, memory, persona: () => '# persona', userName: 'Roshni', clock: () => 1000, logger });
+    memory.addTurn('user', 'earlier question', 1);
+    memory.addTurn('assistant', 'earlier answer', 2);
+    await chat.reply('what am I looking at?', { timeline: '10:02 Grafana', current: ctx(), incidentMode: false });
+    expect(logger.info).toHaveBeenCalledWith('chat_prompt', {
+      systemChars: expect.any(Number),
+      screenBlockChars: expect.any(Number),
+      includesScreenBlock: true,
+      historyTurns: 2,
+    });
+    const [, data] = logger.info.mock.calls.find(([event]) => event === 'chat_prompt')!;
+    expect((data as { screenBlockChars: number }).screenBlockChars).toBeGreaterThan(0);
+  });
+
+  it('logs includesScreenBlock=false for private contexts, and stays silent without an injected logger', async () => {
+    const gw = new ScriptedGateway(() => 'ok.');
+    const memory = new Memory(':memory:');
+    const logger = { info: vi.fn(), warn: vi.fn(), error: vi.fn() };
+    const withLogger = new ChatResponder({ gateway: gw, memory, persona: () => '# persona', userName: 'Roshni', clock: () => 1000, logger });
+    await withLogger.reply('hi', { timeline: 't', current: ctx({ private: true }), incidentMode: false });
+    expect(logger.info).toHaveBeenCalledWith('chat_prompt', expect.objectContaining({ includesScreenBlock: false, screenBlockChars: 0 }));
+
+    // No logger injected: defaults to silent, must not throw.
+    const withoutLogger = new ChatResponder({ gateway: gw, memory, persona: () => '# persona', userName: 'Roshni', clock: () => 1000 });
+    await expect(withoutLogger.reply('hi', { timeline: 't', incidentMode: false })).resolves.toBe('ok.');
   });
 });

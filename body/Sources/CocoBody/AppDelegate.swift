@@ -13,6 +13,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private var paused = false
     private var hotkeyMonitors: [Any] = []
     private static let pauseKeyCode: UInt16 = 35  // "P"
+    /// Diagnostics only (counts/ids, never OCR text/title/URL content): last bundleId logged via context_out.
+    private var lastContextLogBundleId: String?
     /// Keep in sync with the brain's UtterancePayload.text schema (brain/src/protocol.ts): past this, the brain
     /// rejects the message outright and it is silently dropped.
     private static let chatMaxChars = 4000
@@ -49,7 +51,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             }
         }
         brain.onMessage = { [weak self] msg in self?.handle(msg) }
-        perception.onContext = { [weak self] payload in self?.brain.send(.context(payload)) }
+        perception.onContext = { [weak self] payload in
+            self?.logContextOut(payload)
+            self?.brain.send(.context(payload))
+        }
         perception.onKeyframe = { [weak self] frame in self?.brain.send(.keyframe(frame)) }
         perception.onPermissionMissing = { [weak self] text in self?.overlay.showLocal(text) }
         sensor.onActivity = { [weak self] activity in
@@ -85,6 +90,14 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             let matched = WindowFocus.focus(target: f.target, kind: f.kind)
             brain.send(.focusResult(FocusResultPayload(requestId: f.requestId, ok: matched != nil, matched: matched)))
         }
+    }
+
+    /// Diagnostics only (counts/ids, never OCR text/title/URL content): logs once per bundleId change.
+    private func logContextOut(_ payload: ContextPayload) {
+        guard payload.bundleId != lastContextLogBundleId else { return }
+        lastContextLogBundleId = payload.bundleId
+        let ocrChars = payload.ocrText?.count ?? 0
+        FileLog.body.info("context_out app=\(payload.bundleId) ocrChars=\(ocrChars) private=\(payload.isPrivate)")
     }
 
     private func togglePause() {

@@ -53,7 +53,7 @@ async function main(): Promise<void> {
     policy: new NudgePolicy({ minGapMs: config.nudge.minGapSec * 1000 }),
     triggers: new TriggerDeduper(),
     decider: new NudgeDecider({ gateway, visionGateway, persona: () => persona.get(), log }),
-    chat: new ChatResponder({ gateway, memory, persona: () => persona.get(), userName: config.user.name, clock: Date.now }),
+    chat: new ChatResponder({ gateway, memory, persona: () => persona.get(), userName: config.user.name, clock: Date.now, logger: log }),
     memory,
     gateway,
     keyframesEnabled: visionGateway !== undefined,

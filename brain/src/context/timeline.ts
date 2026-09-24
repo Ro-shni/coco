@@ -45,6 +45,11 @@ export class Timeline {
     return this.cur;
   }
 
+  /** Count only, for diagnostics — never expose entry contents. */
+  entriesCount(): number {
+    return this.entries.length;
+  }
+
   dwellMs(now: number): number {
     return this.cur ? now - this.cur.since : 0;
   }

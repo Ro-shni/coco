@@ -56,6 +56,7 @@ const RECENT_TEXTS = 20;
 const PENDING_TRIGGER_TTL_MS = 10 * 60_000;
 const HEALTH_BACKOFF_START_MS = 15_000;
 const HEALTH_BACKOFF_MAX_MS = 120_000;
+const CONTEXT_LOG_OCR_DELTA = 50;
 const SHH = 'shh';
 const SHH_TODAY = 'shh for today';
 const UNMUTE = 'unmute';
@@ -91,6 +92,7 @@ export class Orchestrator {
   private awaitingRecovery = false;
   private healthBackoffMs = 0;
   private nextHealthCheckAt = 0;
+  private lastContextLog: { app: string; bundleId: string; ocrChars: number } | undefined;
 
   constructor(private readonly d: OrchestratorDeps) {
     const mutedUntil = d.memory.getState<number>(MUTED_STATE_KEY);
@@ -155,6 +157,7 @@ export class Orchestrator {
   private async onContext(msg: ContextMsg): Promise<void> {
     this.d.timeline.ingest(msg);
     this.updateMood();
+    this.logContextIn(msg);
     if (msg.private) return;
     const now = this.d.clock();
     const key = this.d.timeline.contextKey();
@@ -170,6 +173,24 @@ export class Orchestrator {
         this.pendingTrigger = { trigger, contextKey: key, at: now };
       }
     }
+  }
+
+  /** Diagnostics only (counts/ids, never OCR text/title/URL content): logs on app/bundleId change or a >50-char ocrChars swing, to avoid 1/s spam. */
+  private logContextIn(msg: ContextMsg): void {
+    const ocrChars = msg.ocrText?.length ?? 0;
+    const prev = this.lastContextLog;
+    const changed = !prev || prev.app !== msg.app || prev.bundleId !== msg.bundleId || Math.abs(ocrChars - prev.ocrChars) > CONTEXT_LOG_OCR_DELTA;
+    if (!changed) return;
+    this.lastContextLog = { app: msg.app, bundleId: msg.bundleId, ocrChars };
+    this.d.log.info('context_in', {
+      app: msg.app,
+      bundleId: msg.bundleId,
+      private: msg.private,
+      titleChars: msg.windowTitle.length,
+      urlPresent: msg.url !== undefined,
+      selectionChars: msg.selection?.length ?? 0,
+      ocrChars,
+    });
   }
 
   private async onKeyframe(msg: KeyframeMsg): Promise<void> {
@@ -357,6 +378,14 @@ export class Orchestrator {
 
   private async answer(text: string): Promise<void> {
     const cur = this.d.timeline.current();
+    this.d.log.info('chat_ctx', {
+      hasCurrent: cur !== undefined,
+      app: cur?.msg.app,
+      bundleId: cur?.msg.bundleId,
+      private: cur?.msg.private,
+      ocrChars: cur?.msg.ocrText?.length ?? 0,
+      timelineEntries: this.d.timeline.entriesCount(),
+    });
     try {
       const reply = await this.d.chat.reply(text, {
         timeline: this.d.timeline.render(this.d.clock()),

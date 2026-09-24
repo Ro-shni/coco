@@ -1,3 +1,4 @@
+import { silentLogger, type Logger } from './logger.js';
 import type { Memory } from './memory.js';
 import { PRIORITY, type ChatMessage, type ModelGateway } from './model/gateway.js';
 import { describeScreen, wrapUntrusted } from './persona/prompt.js';
@@ -21,6 +22,8 @@ export class ChatResponder {
       userName: string;
       clock: () => number;
       historyTurns?: number;
+      /** Diagnostics only (counts/booleans, never prompt text). Defaults to silent. */
+      logger?: Logger;
     },
   ) {}
 
@@ -59,6 +62,12 @@ export class ChatResponder {
     const history = this.deps.memory
       .recentTurns(this.deps.historyTurns ?? 12)
       .map((t): ChatMessage => ({ role: t.role, content: t.text }));
+    (this.deps.logger ?? silentLogger).info('chat_prompt', {
+      systemChars: system.length,
+      screenBlockChars: screen.length,
+      includesScreenBlock: screen.length > 0,
+      historyTurns: history.length,
+    });
     return [
       { role: 'system', content: system },
       { role: 'user', content: `Current context:\n${wrapUntrusted('timeline', ctx.timeline)}${screen}` },
