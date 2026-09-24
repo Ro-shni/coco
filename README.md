@@ -11,6 +11,14 @@ Prerequisites: macOS 14+, Command Line Tools (`xcode-select --install`), Node 26
 
 On first launch Coco opens a permissions window: grant Screen Recording, Accessibility and Input Monitoring to **Coco**. Ad-hoc builds lose these grants on every rebuild; to keep them, create a self-signed "Code Signing" certificate named `Coco Dev` in Keychain Access (Certificate Assistant → Create a Certificate) and build with `COCO_SIGN_IDENTITY="Coco Dev" ./scripts/dev.sh`.
 
+**Permissions not sticking?** With an ad-hoc build every rebuild is a new app to macOS. To use a persistent identity, follow the Keychain Access recipe above. If switching identities, reset stale grants first:
+```sh
+tccutil reset ScreenCapture com.roshni.coco
+tccutil reset Accessibility com.roshni.coco
+tccutil reset ListenEvent com.roshni.coco
+```
+Then rebuild and grant permissions again.
+
 ## Use
 
 - Coco sits in the bottom-right corner. Click it to chat.

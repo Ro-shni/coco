@@ -15,6 +15,27 @@ SCRATCH="${COCO_SWIFT_SCRATCH:-$HOME/Library/Caches/coco-swift-build}"
 NODE="${COCO_NODE:-$(command -v node || true)}"
 [ -n "$NODE" ] && [ -x "$NODE" ] || { echo "node not found; install Node 26+ or set COCO_NODE" >&2; exit 1; }
 
+# Check if COCO_SIGN_IDENTITY is set and valid before building
+if [ -n "${COCO_SIGN_IDENTITY:+x}" ] && [ -n "$COCO_SIGN_IDENTITY" ] && [ "$COCO_SIGN_IDENTITY" != "-" ]; then
+  # Search for the identity without -v (so self-signed certs are accepted)
+  if ! security find-identity -p codesigning | grep -q "\"$COCO_SIGN_IDENTITY\""; then
+    {
+      echo "Error: Code signing identity \"$COCO_SIGN_IDENTITY\" not found in Keychain."
+      echo ""
+      echo "To create a self-signed certificate:"
+      echo "  1. Open Keychain Access"
+      echo "  2. Go to Keychain Access → Certificate Assistant → Create a Certificate…"
+      echo "  3. Name: \"Coco Dev\""
+      echo "  4. Identity Type: \"Self Signed Root\""
+      echo "  5. Certificate Type: \"Code Signing\""
+      echo "  6. Click Create"
+      echo ""
+      echo "Or run without COCO_SIGN_IDENTITY for an ad-hoc build (permissions reset on every rebuild)."
+    } >&2
+    exit 1
+  fi
+fi
+
 mkdir -p "$SCRATCH"
 (cd "$BODY" && swift build -c release --scratch-path "$SCRATCH")
 rm -rf "$APP"
@@ -48,4 +69,11 @@ cat > "$APP/Contents/Resources/CocoPaths.plist" <<PLIST
 PLIST
 
 codesign --force --sign "${COCO_SIGN_IDENTITY:--}" --identifier com.roshni.coco "$APP"
+
+if [ -n "${COCO_SIGN_IDENTITY:+x}" ] && [ -n "$COCO_SIGN_IDENTITY" ] && [ "$COCO_SIGN_IDENTITY" != "-" ]; then
+  echo "Signed with: $COCO_SIGN_IDENTITY"
+else
+  echo "Signed with: ad-hoc"
+  echo "Warning: macOS permissions will need re-granting after each rebuild. Use a persistent identity (COCO_SIGN_IDENTITY) to avoid this."
+fi
 echo "Built $APP"
