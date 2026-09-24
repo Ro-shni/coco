@@ -43,7 +43,7 @@ final class Perception {
 
     func captureKeyframe() {
         guard !paused, let snap = AXReader.snapshot(), snap.bundleId != Bundle.main.bundleIdentifier, !isPrivate(snap),
-              let window = WindowCapture.frontWindow(pid: snap.pid) else { return }
+              let window = WindowCapture.frontWindow(pid: snap.pid, focusedTitle: snap.windowTitle) else { return }
         Task {
             guard let image = try? await WindowCapture.capture(windowID: window.id, maxDimension: Self.keyframeMaxDimension),
                   let jpeg = WindowCapture.jpegBase64(image) else {
@@ -82,7 +82,7 @@ final class Perception {
             emit(base)
             return
         }
-        guard let window = WindowCapture.frontWindow(pid: snap.pid) else { emit(base); return }
+        guard let window = WindowCapture.frontWindow(pid: snap.pid, focusedTitle: snap.windowTitle) else { emit(base); return }
         capturing = true
         Task { await self.captureAndRead(window: window, base: base) }
     }
