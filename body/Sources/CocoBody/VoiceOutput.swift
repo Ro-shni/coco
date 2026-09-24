@@ -6,6 +6,8 @@ import Foundation
 final class VoiceOutput: NSObject, AVSpeechSynthesizerDelegate {
     static let voiceIdKey = "coco.voiceId"
     static let enabledKey = "coco.voiceEnabled"
+    /// Special `coco.voiceId` value (and the default when unset) meaning "speak with the macOS System Voice".
+    static let systemVoiceId = "system"
 
     /// "Voice on/off" from the status menu; on unless the user turned it off.
     static var isEnabled: Bool {
@@ -17,35 +19,62 @@ final class VoiceOutput: NSObject, AVSpeechSynthesizerDelegate {
     var onSpeakingChanged: ((Bool) -> Void)?
 
     private let synthesizer = AVSpeechSynthesizer()
+    private let systemVoice = SystemVoiceSpeaker()
 
     override init() {
         super.init()
         synthesizer.delegate = self
+        systemVoice.onSpeakingChanged = { [weak self] speaking in self?.onSpeakingChanged?(speaking) }
     }
 
-    /// Installed English voices, for the menu and the picker.
+    /// Installed English voices, for the menu and the picker. Includes novelty voices — callers that
+    /// display or auto-pick a voice must filter with `VoicePicker.isNovelty(_:)` / `VoicePicker.choose`.
     static func englishVoices() -> [VoiceInfo] {
         AVSpeechSynthesisVoice.speechVoices()
             .filter { $0.language.hasPrefix("en") }
-            .map { VoiceInfo(identifier: $0.identifier, name: $0.name, language: $0.language, quality: quality($0.quality)) }
+            .map {
+                VoiceInfo(identifier: $0.identifier, name: $0.name, language: $0.language,
+                          quality: quality($0.quality), isNovelty: $0.voiceTraits.contains(.isNoveltyVoice))
+            }
     }
 
-    /// The voice Coco will use: the saved choice if still installed, else VoicePicker's best English voice.
+    /// True when Coco should speak with the macOS System Voice: unset (the default) or explicitly "system".
+    static func isSystemVoiceActive() -> Bool {
+        let saved = UserDefaults.standard.string(forKey: voiceIdKey)
+        return saved == nil || saved == systemVoiceId
+    }
+
+    /// The AV voice Coco will use when not in system-voice mode: the saved choice if still installed and
+    /// not novelty, else VoicePicker's best remaining English voice.
     static func currentVoiceId() -> String? {
-        VoicePicker.choose(englishVoices(), preferredIdentifier: UserDefaults.standard.string(forKey: voiceIdKey))
+        let saved = UserDefaults.standard.string(forKey: voiceIdKey)
+        let preferred = (saved == nil || saved == systemVoiceId) ? nil : saved
+        return VoicePicker.choose(englishVoices(), preferredIdentifier: preferred)
     }
 
+    /// Speaks `SpeechText.clean(text)` — drafts are never passed here, and raw markdown/URLs/emoji never
+    /// reach either voice path. New speech interrupts whatever is being said, in either mode.
     func speak(_ text: String) {
-        let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !trimmed.isEmpty else { return }
+        let cleaned = SpeechText.clean(text)
+        guard !cleaned.isEmpty else { return }
+        if Self.isSystemVoiceActive() {
+            if synthesizer.isSpeaking { synthesizer.stopSpeaking(at: .immediate) }
+            systemVoice.speak(cleaned)
+            return
+        }
+        systemVoice.stop()
         if synthesizer.isSpeaking { synthesizer.stopSpeaking(at: .immediate) }
-        let utterance = AVSpeechUtterance(string: trimmed)
+        let utterance = AVSpeechUtterance(string: cleaned)
         if let id = Self.currentVoiceId() { utterance.voice = AVSpeechSynthesisVoice(identifier: id) }
+        utterance.rate = AVSpeechUtteranceDefaultSpeechRate * 0.92
+        utterance.pitchMultiplier = 1.1
+        utterance.preUtteranceDelay = 0.05
         synthesizer.speak(utterance)
     }
 
     func stop() {
         if synthesizer.isSpeaking { synthesizer.stopSpeaking(at: .immediate) }
+        systemVoice.stop()
     }
 
     private static func quality(_ q: AVSpeechSynthesisVoiceQuality) -> Int {

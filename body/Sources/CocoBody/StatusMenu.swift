@@ -68,12 +68,20 @@ final class StatusMenu: NSObject, NSMenuDelegate {
     func menuNeedsUpdate(_ menu: NSMenu) {
         guard menu === voicesMenu else { return }
         menu.removeAllItems()
-        let voices = VoiceOutput.englishVoices().sorted { ($0.name, $0.language) < ($1.name, $1.language) }
+        let systemActive = VoiceOutput.isSystemVoiceActive()
+        let systemEntry = NSMenuItem(title: "System voice (Siri)", action: #selector(selectSystemVoice), keyEquivalent: "")
+        systemEntry.target = self
+        systemEntry.state = systemActive ? .on : .off
+        menu.addItem(systemEntry)
+        menu.addItem(.separator())
+        let voices = VoiceOutput.englishVoices()
+            .filter { !VoicePicker.isNovelty($0) }
+            .sorted { ($0.name, $0.language) < ($1.name, $1.language) }
         guard !voices.isEmpty else {
             menu.addItem(withTitle: "No English voices installed", action: nil, keyEquivalent: "").isEnabled = false
             return
         }
-        let current = VoiceOutput.currentVoiceId()
+        let current = systemActive ? nil : VoiceOutput.currentVoiceId()
         for voice in voices {
             let label = voice.quality > 0 ? "\(voice.name) (\(voice.language), \(voice.quality == 2 ? "premium" : "enhanced"))"
                                           : "\(voice.name) (\(voice.language))"
@@ -90,6 +98,10 @@ final class StatusMenu: NSObject, NSMenuDelegate {
         VoiceOutput.isEnabled = enabled
         voiceToggleItem.state = enabled ? .on : .off
         onVoiceEnabledChanged?(enabled)
+    }
+
+    @objc private func selectSystemVoice() {
+        UserDefaults.standard.set(VoiceOutput.systemVoiceId, forKey: VoiceOutput.voiceIdKey)
     }
 
     @objc private func selectVoice(_ sender: NSMenuItem) {

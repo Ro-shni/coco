@@ -35,8 +35,8 @@ import Testing
 }
 
 @Suite struct VoicePickerTests {
-    func v(_ id: String, _ name: String, _ lang: String, _ q: Int = 0) -> VoiceInfo {
-        VoiceInfo(identifier: id, name: name, language: lang, quality: q)
+    func v(_ id: String, _ name: String, _ lang: String, _ q: Int = 0, novelty: Bool = false) -> VoiceInfo {
+        VoiceInfo(identifier: id, name: name, language: lang, quality: q, isNovelty: novelty)
     }
 
     @Test func preferredIdentifierWins() {
@@ -47,24 +47,42 @@ import Testing
         let voices = [v("a", "Alex", "en-US", 0)]
         #expect(VoicePicker.choose(voices, preferredIdentifier: "gone") == "a")
     }
-    @Test func bestQualityUSFirst() {
-        let voices = [v("gb", "Daniel", "en-GB", 2), v("us0", "Fred", "en-US", 0), v("us1", "Samantha", "en-US", 1)]
-        #expect(VoicePicker.choose(voices, preferredIdentifier: nil) == "us1")
-    }
-    @Test func thenGB() {
-        let voices = [v("au", "Karen", "en-AU", 2), v("gb", "Daniel", "en-GB", 0), v("fr", "Thomas", "fr-FR", 2)]
-        #expect(VoicePicker.choose(voices, preferredIdentifier: nil) == "gb")
-    }
-    @Test func thenAnyEnglish() {
-        let voices = [v("fr", "Thomas", "fr-FR", 2), v("in", "Rishi", "en-IN", 0), v("au", "Karen", "en-AU", 1)]
-        #expect(VoicePicker.choose(voices, preferredIdentifier: nil) == "au")
-    }
-    @Test func tiesBreakByName() {
-        let voices = [v("z", "Zoe", "en-US", 1), v("a", "Ava", "en-US", 1)]
-        #expect(VoicePicker.choose(voices, preferredIdentifier: nil) == "a")
-    }
     @Test func noEnglishMeansNil() {
         #expect(VoicePicker.choose([v("fr", "Thomas", "fr-FR", 2)], preferredIdentifier: nil) == nil)
         #expect(VoicePicker.choose([], preferredIdentifier: nil) == nil)
+    }
+
+    // Never novelty voices.
+    @Test func noveltyOnlyListIsNil() {
+        let voices = [v("a", "Zarvox", "en-US", 2, novelty: true), v("b", "Bells", "en-US", 1)]
+        #expect(VoicePicker.choose(voices, preferredIdentifier: nil) == nil)
+    }
+    @Test func albertLosesToSamanthaEvenAtEqualQuality() {
+        // "Albert" is excluded by the name fallback list even though `isNovelty` isn't set here.
+        let voices = [v("a", "Albert", "en-US", 0), v("s", "Samantha", "en-US", 0)]
+        #expect(VoicePicker.choose(voices, preferredIdentifier: nil) == "s")
+    }
+    @Test func preferredIdentifierNeverANoveltyVoice() {
+        let voices = [v("a", "Albert", "en-US", 0, novelty: true), v("s", "Samantha", "en-US", 0)]
+        #expect(VoicePicker.choose(voices, preferredIdentifier: "a") == "s")
+    }
+
+    // Preference order: quality > preferred names > locale tier > alphabetical.
+    @Test func qualityBeatsPreferredName() {
+        let voices = [v("z", "Zoe", "en-US", 2), v("s", "Samantha", "en-US", 0)]
+        #expect(VoicePicker.choose(voices, preferredIdentifier: nil) == "z")
+    }
+    @Test func preferredNameBeatsLocaleTier() {
+        // Tara (en-IN, preferred) beats a same-quality, non-preferred en-US voice.
+        let voices = [v("t", "Tara", "en-IN", 0), v("n", "Nora", "en-US", 0)]
+        #expect(VoicePicker.choose(voices, preferredIdentifier: nil) == "t")
+    }
+    @Test func localeTierBreaksTiesAmongNonPreferredNames() {
+        let voices = [v("au", "Nora", "en-AU", 0), v("gb", "Daniel", "en-GB", 0), v("fr", "Thomas", "fr-FR", 0)]
+        #expect(VoicePicker.choose(voices, preferredIdentifier: nil) == "gb")
+    }
+    @Test func alphabeticalBreaksFinalTie() {
+        let voices = [v("z", "Zed", "en-US", 0), v("a", "Amy", "en-US", 0)]
+        #expect(VoicePicker.choose(voices, preferredIdentifier: nil) == "a")
     }
 }
