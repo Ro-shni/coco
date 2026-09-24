@@ -1,4 +1,6 @@
 import type { ChatContext } from './chat.js';
+import type { Command } from './commands.js';
+import { parseCommand } from './commands.js';
 import type { CocoConfig } from './config.js';
 import { isIncident } from './context/incident.js';
 import type { LookPolicy } from './context/look.js';
@@ -10,7 +12,7 @@ import { ModelUnavailableError, PRIORITY, type ModelGateway, type Priority } fro
 import { MUTE_MS, nextLocalMidnight, type NudgePolicy } from './nudge/policy.js';
 import type { NudgeDecision } from './persona/decision.js';
 import type { DecideInput } from './persona/decider.js';
-import type { ActivityState, BodyToBrain, BrainToBody, ContextMsg, KeyframeMsg, Mood, SayKind } from './protocol.js';
+import type { ActivityState, BodyToBrain, BrainToBody, ContextMsg, FocusResultMsg, KeyframeMsg, Mood, SayKind } from './protocol.js';
 
 export interface OrchestratorDeps {
   send: (msg: BrainToBody) => void;
@@ -40,7 +42,15 @@ interface PendingTrigger {
   at: number;
 }
 
+interface PendingFocus {
+  requestId: string;
+  target: string;
+  kind: Command['kind'];
+  at: number;
+}
+
 const KEYFRAME_FRESH_MS = 60_000;
+const FOCUS_TIMEOUT_MS = 5000;
 const MUTED_STATE_KEY = 'mutedUntil';
 const RECENT_TEXTS = 20;
 const PENDING_TRIGGER_TTL_MS = 10 * 60_000;
@@ -72,6 +82,7 @@ export class Orchestrator {
   private keyframe: { key: string; jpeg: string; ts: number } | undefined;
   private pending: readonly PendingNudge[] = [];
   private pendingTrigger: PendingTrigger | undefined;
+  private pendingFocus: PendingFocus | undefined;
   private recentTexts: ReadonlyMap<string, string> = new Map();
   private deciding = false;
   private mood: Mood | undefined;
@@ -100,6 +111,8 @@ export class Orchestrator {
         return this.onUtterance(msg.text);
       case 'chip':
         return this.onChip(msg.nudgeId, msg.choice);
+      case 'focus_result':
+        return this.onFocusResult(msg);
     }
   }
 
@@ -112,6 +125,7 @@ export class Orchestrator {
   pulse(): Promise<void> {
     const now = this.d.clock();
     this.expirePending(now);
+    this.expirePendingFocus(now);
     this.clearStalePendingTrigger(now);
     this.maybeRequestKeyframe(now);
     return this.retryPendingTrigger();
@@ -172,7 +186,16 @@ export class Orchestrator {
     if (command === SHH) return this.mute(now + MUTE_MS, TEXT.muted30);
     if (command === SHH_TODAY) return this.mute(nextLocalMidnight(now), TEXT.mutedToday);
     if (command === UNMUTE) return this.mute(now, TEXT.unmuted);
+    const cmd = parseCommand(text);
+    if (cmd) return this.startFocus(cmd, text, now);
     await this.answer(text);
+  }
+
+  private startFocus(cmd: Command, text: string, now: number): void {
+    const requestId = this.d.newId();
+    this.pendingFocus = { requestId, target: cmd.target, kind: cmd.kind, at: now };
+    this.d.send({ v: 1, type: 'focus', requestId, target: cmd.target, kind: cmd.kind });
+    this.d.memory.addTurn('user', text, now);
   }
 
   private async onChip(id: string, choice: string): Promise<void> {
@@ -267,6 +290,25 @@ export class Orchestrator {
   private expirePending(now: number): void {
     const ignoreAfterMs = this.d.config.nudge.ignoreAfterSec * 1000;
     for (const p of this.pending.filter((p) => now - p.at >= ignoreAfterMs)) this.resolve(p.id, 'ignored');
+  }
+
+  private onFocusResult(msg: FocusResultMsg): void {
+    const p = this.pendingFocus;
+    if (!p || p.requestId !== msg.requestId) return;
+    this.pendingFocus = undefined;
+    const now = this.d.clock();
+    const text = msg.ok
+      ? `Switched to ${msg.matched ?? p.target}.`
+      : `I can't find ${p.kind === 'window' ? 'a window' : 'an app'} called "${p.target}".`;
+    this.say(text, 'reply');
+    this.d.memory.addTurn('assistant', text, now);
+  }
+
+  private expirePendingFocus(now: number): void {
+    const p = this.pendingFocus;
+    if (!p || now - p.at < FOCUS_TIMEOUT_MS) return;
+    this.pendingFocus = undefined;
+    this.say("That switch didn't go through.", 'reply');
   }
 
   private clearStalePendingTrigger(now: number): void {

@@ -51,7 +51,16 @@ export type UtteranceMsg = z.infer<typeof UtteranceMsg>;
 export const ChipMsg = z.object({ v, type: z.literal('chip'), nudgeId: z.string(), choice: z.string() });
 export type ChipMsg = z.infer<typeof ChipMsg>;
 
-export const BodyToBrain = z.discriminatedUnion('type', [ContextMsg, ActivityMsg, KeyframeMsg, UtteranceMsg, ChipMsg]);
+export const FocusResultMsg = z.object({
+  v,
+  type: z.literal('focus_result'),
+  requestId: z.string(),
+  ok: z.boolean(),
+  matched: z.string().optional(),
+});
+export type FocusResultMsg = z.infer<typeof FocusResultMsg>;
+
+export const BodyToBrain = z.discriminatedUnion('type', [ContextMsg, ActivityMsg, KeyframeMsg, UtteranceMsg, ChipMsg, FocusResultMsg]);
 export type BodyToBrain = z.infer<typeof BodyToBrain>;
 
 export const SayMsg = z.object({
@@ -72,7 +81,16 @@ export type RequestKeyframeMsg = z.infer<typeof RequestKeyframeMsg>;
 export const MoodMsg = z.object({ v, type: z.literal('mood'), mood: Mood });
 export type MoodMsg = z.infer<typeof MoodMsg>;
 
-export const BrainToBody = z.discriminatedUnion('type', [SayMsg, RequestKeyframeMsg, MoodMsg]);
+export const FocusMsg = z.object({
+  v,
+  type: z.literal('focus'),
+  requestId: z.string().min(1),
+  target: z.string().min(1).max(120),
+  kind: z.enum(['app', 'window']),
+});
+export type FocusMsg = z.infer<typeof FocusMsg>;
+
+export const BrainToBody = z.discriminatedUnion('type', [SayMsg, RequestKeyframeMsg, MoodMsg, FocusMsg]);
 export type BrainToBody = z.infer<typeof BrainToBody>;
 
 export function parseBodyMessage(raw: string): BodyToBrain | null {

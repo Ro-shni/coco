@@ -410,3 +410,55 @@ describe('model health', () => {
     expect(s.moods().length).toBe(before + 1);
   });
 });
+
+describe('focus commands', () => {
+  it('sends a focus message for a "go to X" utterance instead of consulting chat or the decider', async () => {
+    const s = setup();
+    await s.o.handle({ v: 1, type: 'utterance', text: 'go to slack', source: 'chat' });
+    expect(s.reply).not.toHaveBeenCalled();
+    expect(s.decide).not.toHaveBeenCalled();
+    expect(s.sent.filter((m) => m.type === 'focus')).toEqual([
+      { v: 1, type: 'focus', requestId: 'n1', target: 'slack', kind: 'app' },
+    ]);
+  });
+
+  it('says "Switched to X" once the body confirms a match', async () => {
+    const s = setup();
+    await s.o.handle({ v: 1, type: 'utterance', text: 'go to slack', source: 'chat' });
+    await s.o.handle({ v: 1, type: 'focus_result', requestId: 'n1', ok: true, matched: 'Slack' });
+    expect(s.says().at(-1)).toMatchObject({ kind: 'reply', text: 'Switched to Slack.' });
+  });
+
+  it('reports a miss by app name when the body can\'t find the target', async () => {
+    const s = setup();
+    await s.o.handle({ v: 1, type: 'utterance', text: 'go to figma', source: 'chat' });
+    await s.o.handle({ v: 1, type: 'focus_result', requestId: 'n1', ok: false });
+    expect(s.says().at(-1)).toMatchObject({ kind: 'reply', text: 'I can\'t find an app called "figma".' });
+  });
+
+  it('ignores a focus_result whose requestId does not match the pending focus', async () => {
+    const s = setup();
+    await s.o.handle({ v: 1, type: 'utterance', text: 'go to slack', source: 'chat' });
+    await s.o.handle({ v: 1, type: 'focus_result', requestId: 'stale', ok: true, matched: 'Slack' });
+    expect(s.says()).toHaveLength(0);
+  });
+
+  it('says the switch did not go through after 5s with no result', async () => {
+    const s = setup();
+    await s.o.handle({ v: 1, type: 'utterance', text: 'go to slack', source: 'chat' });
+    s.advance(5000);
+    await s.o.pulse();
+    expect(s.says().at(-1)).toMatchObject({ kind: 'reply', text: "That switch didn't go through." });
+    await s.o.handle({ v: 1, type: 'focus_result', requestId: 'n1', ok: true, matched: 'Slack' });
+    expect(s.says()).toHaveLength(1); // the late result is ignored: pending was already cleared
+  });
+
+  it('never sends a focus message for a chip click, even one whose choice reads like a command', async () => {
+    const s = setup();
+    await s.o.handle(runbook);
+    await s.o.tick();
+    await s.o.handle({ v: 1, type: 'chip', nudgeId: 'n1', choice: 'go to slack' });
+    expect(s.sent.filter((m) => m.type === 'focus')).toHaveLength(0);
+    expect(s.reply).toHaveBeenCalledOnce();
+  });
+});
