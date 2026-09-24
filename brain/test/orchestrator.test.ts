@@ -338,6 +338,28 @@ describe('muting', () => {
   });
 });
 
+describe('clear chat', () => {
+  it('"clear chat" clears memory turns and confirms, without consulting chat or the decider', async () => {
+    const s = setup();
+    s.memory.addTurn('user', 'hi', T0);
+    s.memory.addTurn('assistant', 'hello', T0);
+    await s.o.handle({ v: 1, type: 'utterance', text: 'clear chat', source: 'chat' });
+    expect(s.memory.recentTurns(10)).toEqual([]);
+    expect(s.says().at(-1)).toMatchObject({ kind: 'reply', text: 'Chat cleared. Fresh start.' });
+    expect(s.reply).not.toHaveBeenCalled();
+    expect(s.decide).not.toHaveBeenCalled();
+  });
+
+  it('"forget this chat" (case/whitespace-insensitive) also clears memory turns', async () => {
+    const s = setup();
+    s.memory.addTurn('user', 'hi', T0);
+    await s.o.handle({ v: 1, type: 'utterance', text: '  Forget This Chat  ', source: 'chat' });
+    expect(s.memory.recentTurns(10)).toEqual([]);
+    expect(s.says().at(-1)).toMatchObject({ kind: 'reply', text: 'Chat cleared. Fresh start.' });
+    expect(s.reply).not.toHaveBeenCalled();
+  });
+});
+
 describe('model health', () => {
   it('a model error flips to offline once (sleepy + status); recovery is announced only after a successful model call', async () => {
     const s = setup();

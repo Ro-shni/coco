@@ -9,7 +9,7 @@ const make = (gw: ScriptedGateway, memory = new Memory(':memory:')) =>
   ({ memory, chat: new ChatResponder({ gateway: gw, memory, persona: () => '# persona', userName: 'Roshni', clock: () => 1000 }) });
 
 describe('ChatResponder', () => {
-  it('answers with persona, untrusted context, history and the question; stores both turns', async () => {
+  it('answers with persona, history, then a final message carrying fresh context and the question; stores both turns', async () => {
     const gw = new ScriptedGateway(() => 'You are looking at supply-prd p99. It spiked at 10:40.');
     const { memory, chat } = make(gw);
     memory.addTurn('user', 'earlier question', 1);
@@ -20,10 +20,29 @@ describe('ChatResponder', () => {
     expect(req.priority).toBe(PRIORITY.user);
     expect(req.format).toBeUndefined();
     expect(req.messages[0]!.content).toContain('# persona');
-    expect(req.messages[1]!.content).toContain('<untrusted source="screen">');
-    expect(req.messages.map((m) => m.content)).toContain('earlier answer');
-    expect(req.messages.at(-1)).toEqual({ role: 'user', content: 'what am I looking at?' });
+    expect(req.messages[0]!.content).toContain('never repeat an earlier claim about the screen');
+    // history comes right after the system message, before the final context+question message
+    expect(req.messages[1]).toEqual({ role: 'user', content: 'earlier question' });
+    expect(req.messages[2]).toEqual({ role: 'assistant', content: 'earlier answer' });
+    expect(req.messages).toHaveLength(4);
+    const final = req.messages.at(-1)!;
+    expect(final.role).toBe('user');
+    expect(final.content).toContain('<untrusted source="screen">');
+    expect(final.content).toContain('what am I looking at?');
+    expect(req.messages.some((m) => m.content === 'Got it.')).toBe(false);
     expect(memory.recentTurns(2).map((t) => t.text)).toEqual(['what am I looking at?', reply]);
+  });
+
+  it('defaults historyTurns to 8 when not configured', async () => {
+    const gw = new ScriptedGateway(() => 'ok.');
+    const memory = new Memory(':memory:');
+    for (let i = 0; i < 10; i++) memory.addTurn(i % 2 === 0 ? 'user' : 'assistant', `t${i}`, i);
+    const chat = new ChatResponder({ gateway: gw, memory, persona: () => '# persona', userName: 'Roshni', clock: () => 1000 });
+    await chat.reply('hi', { timeline: 't', incidentMode: false });
+    const req = gw.calls[0]!;
+    // system + 8 history turns + final message
+    expect(req.messages).toHaveLength(10);
+    expect(req.messages[1]).toEqual({ role: 'user', content: 't2' });
   });
 
   it('omits screen details for private contexts', async () => {

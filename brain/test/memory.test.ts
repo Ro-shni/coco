@@ -40,6 +40,16 @@ describe('Memory', () => {
     expect(m.facts()).toEqual(['prefers kubectl', 'on call this week']);
   });
 
+  it('clears all turns, leaving other tables untouched', () => {
+    const m = new Memory(':memory:');
+    m.addTurn('user', 'hi', 1);
+    m.addTurn('assistant', 'hello', 2);
+    m.setState('mutedUntil', 123);
+    m.clearTurns();
+    expect(m.recentTurns(10)).toEqual([]);
+    expect(m.getState<number>('mutedUntil')).toBe(123);
+  });
+
   it('persists across instances on disk', () => {
     const path = join(mkdtempSync(join(tmpdir(), 'coco-mem-')), 'coco.db');
     const a = new Memory(path);

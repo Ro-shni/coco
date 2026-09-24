@@ -33,6 +33,10 @@ export class Memory {
     return rows.map((r) => ({ role: r.role, text: r.text, ts: Number(r.ts) })).reverse();
   }
 
+  clearTurns(): void {
+    this.db.exec('DELETE FROM turns');
+  }
+
   getState<T>(key: string): T | undefined {
     const row = this.db.prepare('SELECT value FROM state WHERE key = ?').get(key) as unknown as { value: string } | undefined;
     return row ? (JSON.parse(row.value) as T) : undefined;

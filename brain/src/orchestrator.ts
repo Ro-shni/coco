@@ -61,6 +61,8 @@ const SHH = 'shh';
 const SHH_TODAY = 'shh for today';
 const UNMUTE = 'unmute';
 const DISMISS = 'dismiss';
+const CLEAR_CHAT = 'clear chat';
+const FORGET_CHAT = 'forget this chat';
 const TEXT = {
   muted30: "Muted for 30 minutes. I'll still answer if you ask.",
   mutedToday: "Muted until tomorrow. I'll still answer if you ask.",
@@ -69,6 +71,7 @@ const TEXT = {
   online: "I'm back. Brain's online.",
   offlineReply: "My brain's offline right now (Ollama isn't answering). I'll be back when it is.",
   genericError: "Something broke on my side. It's in the brain log.",
+  chatCleared: 'Chat cleared. Fresh start.',
 } as const;
 
 const BUSY: ReadonlySet<ActivityState> = new Set(['typing', 'in_call', 'sharing']);
@@ -207,6 +210,11 @@ export class Orchestrator {
     if (command === SHH) return this.mute(now + MUTE_MS, TEXT.muted30);
     if (command === SHH_TODAY) return this.mute(nextLocalMidnight(now), TEXT.mutedToday);
     if (command === UNMUTE) return this.mute(now, TEXT.unmuted);
+    if (command === CLEAR_CHAT || command === FORGET_CHAT) {
+      this.d.memory.clearTurns();
+      this.say(TEXT.chatCleared, 'reply');
+      return;
+    }
     const cmd = parseCommand(text);
     if (cmd) return this.startFocus(cmd, text, now);
     await this.answer(text);
