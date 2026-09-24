@@ -50,6 +50,7 @@ import Testing
     @Test(arguments: [
         "key sk-proj-abcdefghijklmnop1234 here",
         "slack xoxb-1234567890-abcdefghij token",
+        "slack xoxe-1234567890-abcdefghij config",
         "jwt eyJhbGciOiJIUzI1NiJ9.eyJzdWIiOiIxMjM0NTY3ODkwIn0.dozjgNryP4J3jVmNHl0w5N_XgL0n3I9PlFUP0THsR8U end",
         "aws AKIAIOSFODNN7EXAMPLE end",
         "gh ghp_abcdefghijklmnopqrstuvwxyz0123456789 end",
@@ -57,7 +58,7 @@ import Testing
     func redactsSecrets(input: String) {
         let out = Redactor.redact(input)
         #expect(out.contains("[REDACTED]"))
-        #expect(!out.contains("sk-proj-abc") && !out.contains("xoxb-123") && !out.contains("eyJhbGci") && !out.contains("AKIAIOSF") && !out.contains("ghp_abc"))
+        #expect(!out.contains("sk-proj-abc") && !out.contains("xoxb-123") && !out.contains("xoxe-123") && !out.contains("eyJhbGci") && !out.contains("AKIAIOSF") && !out.contains("ghp_abc"))
     }
 
     @Test func redactsPemBlocks() {
