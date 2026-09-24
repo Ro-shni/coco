@@ -1,6 +1,7 @@
 import type { ChatContext } from './chat.js';
 import type { Command } from './commands.js';
 import { parseCommand } from './commands.js';
+import { detectFocusOffer, isAffirmation } from './offers.js';
 import type { CocoConfig } from './config.js';
 import { isIncident } from './context/incident.js';
 import type { LookPolicy } from './context/look.js';
@@ -49,7 +50,14 @@ interface PendingFocus {
   at: number;
 }
 
+interface PendingOffer {
+  target: string;
+  kind: 'app';
+  at: number;
+}
+
 const KEYFRAME_FRESH_MS = 60_000;
+const OFFER_TTL_MS = 120_000;
 const FOCUS_TIMEOUT_MS = 5000;
 const MUTED_STATE_KEY = 'mutedUntil';
 const RECENT_TEXTS = 20;
@@ -87,6 +95,8 @@ export class Orchestrator {
   private pending: readonly PendingNudge[] = [];
   private pendingTrigger: PendingTrigger | undefined;
   private pendingFocus: PendingFocus | undefined;
+  /** A "bring X to the front" offer Coco just made; a bare "sure" within OFFER_TTL_MS accepts it. */
+  private pendingOffer: PendingOffer | undefined;
   private recentTexts: ReadonlyMap<string, string> = new Map();
   private deciding = false;
   private mood: Mood | undefined;
@@ -206,6 +216,8 @@ export class Orchestrator {
   private async onUtterance(text: string): Promise<void> {
     const now = this.d.clock();
     this.resolveAll('engaged');
+    const offer = this.takeOffer(now);
+    if (offer && isAffirmation(text)) return this.startFocus({ type: 'focus', target: offer.target, kind: offer.kind }, text, now);
     const command = text.trim().toLowerCase();
     if (command === SHH) return this.mute(now + MUTE_MS, TEXT.muted30);
     if (command === SHH_TODAY) return this.mute(nextLocalMidnight(now), TEXT.mutedToday);
@@ -220,6 +232,19 @@ export class Orchestrator {
     await this.answer(text);
   }
 
+  /** Returns the live pending offer (if any) and clears it: any user message consumes or cancels the offer. */
+  private takeOffer(now: number): PendingOffer | undefined {
+    const offer = this.pendingOffer;
+    this.pendingOffer = undefined;
+    return offer && now - offer.at < OFFER_TTL_MS ? offer : undefined;
+  }
+
+  /** Remembers (or forgets) a focus offer in the latest nudge or chat reply Coco just sent. */
+  private rememberOffer(text: string): void {
+    const target = detectFocusOffer(text);
+    this.pendingOffer = target ? { target, kind: 'app', at: this.d.clock() } : undefined;
+  }
+
   private startFocus(cmd: Command, text: string, now: number): void {
     const requestId = this.d.newId();
     this.pendingFocus = { requestId, target: cmd.target, kind: cmd.kind, at: now };
@@ -229,6 +254,7 @@ export class Orchestrator {
 
   private async onChip(id: string, choice: string): Promise<void> {
     const now = this.d.clock();
+    this.pendingOffer = undefined;
     const command = choice.trim().toLowerCase();
     if (command === SHH || command === SHH_TODAY) {
       this.resolve(id, 'muted');
@@ -312,6 +338,7 @@ export class Orchestrator {
       speak: false,
       ...(decision.pointAt ? { pointAt: decision.pointAt } : {}),
     });
+    this.rememberOffer(decision.text);
   }
 
   // ---- outcomes -------------------------------------------------------------
@@ -402,6 +429,7 @@ export class Orchestrator {
       });
       this.announceRecoveryIfNeeded();
       this.say(reply, 'reply');
+      this.rememberOffer(reply);
     } catch (err) {
       const wasOnline = this.online;
       this.onModelError(err);

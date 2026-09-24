@@ -48,6 +48,14 @@ describe('buildNudgeMessages', () => {
     expect(system!.content).toContain('"speak": boolean');
   });
 
+  it('limits offers to things Coco can actually do, including in the examples', () => {
+    const [system] = buildNudgeMessages(input);
+    expect(system!.content).toContain(
+      "- Only offer things you can actually do: explain what's on screen, draft text in chat for the user to paste, or bring an app/window to the front. Never offer to send, post, reply, approve, merge, click, type, run, or open links.",
+    );
+    expect(system!.content).not.toContain('line it up');
+  });
+
   it('keeps screen content inside untrusted blocks in the user message', () => {
     const [, user] = buildNudgeMessages(input);
     expect(user!.content).toContain('<untrusted source="timeline">');

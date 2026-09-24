@@ -72,4 +72,11 @@ describe('NudgeDecider', () => {
     const gw = new ScriptedGateway(() => new ModelUnavailableError('down'));
     await expect(new NudgeDecider({ gateway: gw, persona }).decide(input, PRIORITY.tick)).rejects.toBeInstanceOf(ModelUnavailableError);
   });
+
+  it('rejects a nudge that claims an action Coco did not perform (retry, then null)', async () => {
+    const gw = new ScriptedGateway(() => json({ ...good, text: 'Done — approved Prince\'s request.' }));
+    expect(await new NudgeDecider({ gateway: gw, persona }).decide(input, PRIORITY.tick)).toBeNull();
+    expect(gw.calls).toHaveLength(2);
+    expect(gw.calls[1]!.messages.at(-1)!.content).toContain('claims an action you did not perform');
+  });
 });

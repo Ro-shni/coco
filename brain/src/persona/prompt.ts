@@ -19,10 +19,13 @@ export function describeScreen(msg: ContextMsg, maxOcr = 3000): string {
     .join('\n');
 }
 
+export const CAPABILITY_RULE =
+  "Only offer things you can actually do: explain what's on screen, draft text in chat for the user to paste, or bring an app/window to the front. Never offer to send, post, reply, approve, merge, click, type, run, or open links.";
+
 export const OUTPUT_CONTRACT = [
   'Reply with ONLY a JSON object, no prose before or after, with exactly these keys:',
   '{"speak": boolean, "kind": "quip" | "suggestion" | "question", "text": string, "chips": string[] (0-3 short button labels), "pointAt": string | null (exact on-screen text to point at, or null)}',
-  'Example: {"speak": true, "kind": "suggestion", "text": "p99 on supply-prd went 120ms to 900ms at 10:40. Want me to line it up with the last deploy?", "chips": ["check deploys"], "pointAt": "10:40"}',
+  'Example: {"speak": true, "kind": "suggestion", "text": "p99 on supply-prd went 120ms to 900ms at 10:40, two minutes after the 10:38 deploy.", "chips": ["explain the jump"], "pointAt": "10:40"}',
   'Example of staying quiet: {"speak": false, "kind": "suggestion", "text": "", "chips": [], "pointAt": null}',
 ].join('\n');
 
@@ -55,6 +58,7 @@ export function buildNudgeMessages(input: NudgePromptInput): ChatMessage[] {
     humorRule,
     '- Only speak if you have something specific and worth an interruption. Silence (speak=false) is a good answer.',
     '- Never invent names, numbers or facts that are not on screen.',
+    `- ${CAPABILITY_RULE}`,
     '',
     OUTPUT_CONTRACT,
   ].join('\n');

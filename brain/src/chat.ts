@@ -1,8 +1,8 @@
 import { silentLogger, type Logger } from './logger.js';
 import type { Memory } from './memory.js';
 import { PRIORITY, type ChatMessage, type ModelGateway } from './model/gateway.js';
-import { describeScreen, wrapUntrusted } from './persona/prompt.js';
-import { checkReply } from './persona/selfcheck.js';
+import { CAPABILITY_RULE, describeScreen, wrapUntrusted } from './persona/prompt.js';
+import { checkReply, claimsUnperformedAction } from './persona/selfcheck.js';
 import type { ContextMsg } from './protocol.js';
 
 export interface ChatContext {
@@ -12,6 +12,8 @@ export interface ChatContext {
 }
 
 const CHAT_MAX_SENTENCES = 6;
+export const CANNOT_ACT_FALLBACK =
+  "I can't send or post anything yet — I can only draft text here and bring apps to the front. Want a draft you can paste?";
 
 export class ChatResponder {
   constructor(
@@ -39,6 +41,7 @@ export class ChatResponder {
         { role: 'user', content: `Rewrite that reply fixing: ${check.problems.join('; ')}. Output only the rewritten reply.` },
       ];
       reply = (await gateway.chat({ messages: rewrite, priority: PRIORITY.user, temperature: 0.7 })).trim();
+      if (claimsUnperformedAction(reply)) reply = CANNOT_ACT_FALLBACK;
     }
     const now = this.deps.clock();
     memory.addTurn('user', text, now);
@@ -58,6 +61,7 @@ export class ChatResponder {
       ctx.incidentMode ? '- INCIDENT MODE: no jokes, no emoji.' : '- One dry joke at most, and only if it lands.',
       "- If you don't know, say so in one line.",
       '- The only action you can take is bringing an app or window to the front, which happens automatically when the user says things like "go to Slack". You cannot type, click, move windows, send messages, or change tabs or channels — say so plainly instead of pretending.',
+      `- ${CAPABILITY_RULE}`,
     ].join('\n');
     const screen = ctx.current && !ctx.current.private ? `\n${wrapUntrusted('screen', describeScreen(ctx.current))}` : '';
     const history = this.deps.memory

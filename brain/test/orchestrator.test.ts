@@ -539,3 +539,75 @@ describe('focus commands', () => {
     expect(s.reply).toHaveBeenCalledOnce();
   });
 });
+
+describe('following through on focus offers', () => {
+  const offer: NudgeDecision = { speak: true, kind: 'suggestion', text: "You missed the pulse mcp request in Prince's DM. Want me to bring the Slack window to the front?", chips: [], pointAt: null };
+  const utter = (text: string) => ({ v: 1 as const, type: 'utterance' as const, text, source: 'chat' as const });
+  const focuses = (s: ReturnType<typeof setup>) => s.sent.filter((m) => m.type === 'focus');
+
+  async function offered() {
+    const s = setup();
+    s.decide.mockResolvedValue(offer);
+    await s.o.handle(runbook);
+    await s.o.tick();
+    return s;
+  }
+
+  it('runs the focus flow when the user says "sure" to a nudge offering to bring an app to the front', async () => {
+    const s = await offered();
+    await s.o.handle(utter('sure'));
+    expect(s.reply).not.toHaveBeenCalled();
+    expect(focuses(s)).toEqual([{ v: 1, type: 'focus', requestId: 'n2', target: 'slack', kind: 'app' }]);
+    await s.o.handle({ v: 1, type: 'focus_result', requestId: 'n2', ok: true, matched: 'Slack' });
+    expect(s.says().at(-1)).toMatchObject({ kind: 'reply', text: 'Switched to Slack.' });
+  });
+
+  it('follows through on an offer made in a chat reply', async () => {
+    const s = setup();
+    s.reply.mockResolvedValue('Prince asked about pulse mcp. Want me to bring Slack to the front?');
+    await s.o.handle(utter('what did I miss?'));
+    await s.o.handle(utter('yes please'));
+    expect(s.reply).toHaveBeenCalledOnce();
+    expect(focuses(s)).toEqual([{ v: 1, type: 'focus', requestId: 'n2', target: 'slack', kind: 'app' }]);
+  });
+
+  it('lets the offer expire after 120 s: a late "sure" goes to chat', async () => {
+    const s = await offered();
+    s.advance(121_000);
+    await s.o.handle(utter('sure'));
+    expect(focuses(s)).toHaveLength(0);
+    expect(s.reply).toHaveBeenCalledWith('sure', expect.anything());
+  });
+
+  it('clears the offer on any other user message', async () => {
+    const s = await offered();
+    await s.o.handle(utter('what is pulse mcp?'));
+    await s.o.handle(utter('sure'));
+    expect(focuses(s)).toHaveLength(0);
+    expect(s.reply).toHaveBeenCalledTimes(2);
+  });
+
+  it('only follows through once per offer', async () => {
+    const s = await offered();
+    await s.o.handle(utter('sure'));
+    await s.o.handle(utter('ok'));
+    expect(focuses(s)).toHaveLength(1);
+    expect(s.reply).toHaveBeenCalledWith('ok', expect.anything());
+  });
+
+  it('sends an affirmation with no pending offer to chat as before', async () => {
+    const s = setup();
+    await s.o.handle(utter('sure'));
+    expect(focuses(s)).toHaveLength(0);
+    expect(s.reply).toHaveBeenCalledWith('sure', expect.anything());
+  });
+
+  it('drops the offer when a later Coco message makes no offer', async () => {
+    const s = await offered();
+    s.reply.mockResolvedValue('Pulse mcp is the metrics bridge.');
+    await s.o.handle(utter('what is pulse mcp?'));
+    await s.o.handle(utter('sure'));
+    expect(focuses(s)).toHaveLength(0);
+  });
+});
+

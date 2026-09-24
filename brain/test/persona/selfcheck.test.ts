@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { checkReply, countSentences } from '../../src/persona/selfcheck.js';
+import { checkReply, claimsUnperformedAction, countSentences } from '../../src/persona/selfcheck.js';
 
 const base = { kind: 'suggestion' as const, incidentMode: false, maxSentences: 2 };
 
@@ -44,5 +44,40 @@ describe('checkReply', () => {
 
   it('flags empty replies', () => {
     expect(checkReply({ ...base, text: '  ' }).problems).toContain('empty reply');
+  });
+});
+
+describe('claimsUnperformedAction', () => {
+  it.each([
+    ["Sent to Prince. He's waiting for the `pulse mcp` approval.", 'Sent'],
+    ['I sent the reply', 'I sent'],
+    ['Done — approved.', 'Done'],
+    ["I've posted it in #incidents.", "I've posted"],
+    ['Okay, I just merged the PR.', 'I just merged'],
+    ['I created a PR for that.', 'I created a PR'],
+  ])('flags a completed outward action: %s', (text, phrase) => {
+    expect(claimsUnperformedAction(text)).toBe(phrase);
+  });
+
+  it.each([
+    "I can't send messages yet, here's a draft:",
+    'I cannot post there, but here is a draft.',
+    "I didn't send anything.",
+    'Prince sent you a message',
+    'You sent the PR yesterday',
+    'the alert was sent by pagerduty',
+    'He posted the runbook at 10:40.',
+    'Done with the review?',
+    'p99 jumped at 10:40. Want me to bring Grafana to the front?',
+  ])('does not flag: %s', (text) => {
+    expect(claimsUnperformedAction(text)).toBeNull();
+  });
+
+  it('is reported by checkReply as a problem', () => {
+    const r = checkReply({ ...base, text: 'Sent to Prince.' });
+    expect(r.ok).toBe(false);
+    expect(r.problems).toContain(
+      'claims an action you did not perform: "Sent" — you cannot send, post, click, type, approve or merge; say so and offer a draft instead',
+    );
   });
 });

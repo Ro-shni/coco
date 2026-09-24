@@ -1,5 +1,5 @@
 import { describe, expect, it, vi } from 'vitest';
-import { ChatResponder } from '../src/chat.js';
+import { CANNOT_ACT_FALLBACK, ChatResponder } from '../src/chat.js';
 import { Memory } from '../src/memory.js';
 import { ModelUnavailableError, PRIORITY } from '../src/model/gateway.js';
 import { ScriptedGateway } from './helpers/fakes.js';
@@ -94,5 +94,32 @@ describe('ChatResponder', () => {
     // No logger injected: defaults to silent, must not throw.
     const withoutLogger = new ChatResponder({ gateway: gw, memory, persona: () => '# persona', userName: 'Roshni', clock: () => 1000 });
     await expect(withoutLogger.reply('hi', { timeline: 't', incidentMode: false })).resolves.toBe('ok.');
+  });
+
+  it('tells the model which actions it can and cannot offer', async () => {
+    const gw = new ScriptedGateway(() => 'ok.');
+    await make(gw).chat.reply('hi', { timeline: 't', incidentMode: false });
+    expect(gw.calls[0]!.messages[0]!.content).toContain(
+      '- Only offer things you can actually do: explain what\'s on screen, draft text in chat for the user to paste, or bring an app/window to the front. Never offer to send, post, reply, approve, merge, click, type, run, or open links.',
+    );
+  });
+
+  it('asks for a rewrite when the reply claims an action, and keeps an honest rewrite', async () => {
+    const gw = new ScriptedGateway((_, i) => (i === 0 ? 'Sent to Prince.' : "I can't send messages. Here's a draft: \"Approved, go ahead.\""));
+    const reply = await make(gw).chat.reply('send', { timeline: 't', incidentMode: false });
+    expect(reply).toBe("I can't send messages. Here's a draft: \"Approved, go ahead.\"");
+    expect(gw.calls[1]!.messages.at(-1)!.content).toContain('claims an action you did not perform: "Sent"');
+  });
+
+  it('incident regression: a reply that keeps claiming it sent something is replaced by the safe fallback', async () => {
+    const gw = new ScriptedGateway(() => "Sent to Prince. He's waiting for the approval.");
+    const { memory, chat } = make(gw);
+    memory.addTurn('assistant', 'Click the draft reply in the input box to send the approval.', 1);
+    const reply = await chat.reply('send', { timeline: 't', current: ctx({ app: 'Slack', bundleId: 'com.tinyspeck.slackmacgap', windowTitle: 'Prince Parmar Singh (DM)' }), incidentMode: false });
+    expect(gw.calls).toHaveLength(2);
+    expect(reply).toBe(CANNOT_ACT_FALLBACK);
+    expect(reply).toBe("I can't send or post anything yet — I can only draft text here and bring apps to the front. Want a draft you can paste?");
+    expect(reply).not.toContain('Sent to');
+    expect(memory.recentTurns(1)[0]!.text).toBe(CANNOT_ACT_FALLBACK);
   });
 });
