@@ -1,61 +1,74 @@
-import AppKit
-import CocoCore
+import Carbon.HIToolbox
 
-/// Hold ⌥Space to talk. Active from the ⌥Space key-down until Space or Option is released; key repeats are
-/// ignored. The global monitor needs Accessibility; the local one covers Coco's own windows (and swallows the
-/// keystrokes there so they don't type into the chat box).
+/// Hold ⌥Space to talk, registered as a Carbon system hotkey: the system consumes the keystroke (it never
+/// reaches the focused app) and no extra permission is needed. Active from the press until the hotkey is
+/// released; auto-repeat presses while held are ignored.
 final class PushToTalkHotkey {
     var onDown: (() -> Void)?
     var onUp: (() -> Void)?
 
     private(set) var isActive = false
-    private var monitors: [Any] = []
+    private var hotKeyRef: EventHotKeyRef?
+    private var handlerRef: EventHandlerRef?
+    private static let signature: OSType = 0x436F_636F  // 'Coco'
+    private static let hotKeyID: UInt32 = 1
 
     func install() {
-        let mask: NSEvent.EventTypeMask = [.keyDown, .keyUp, .flagsChanged]
-        if let global = NSEvent.addGlobalMonitorForEvents(matching: mask, handler: { [weak self] e in _ = self?.process(e) }) {
-            monitors.append(global)
+        guard hotKeyRef == nil else { return }
+        var specs = [
+            EventTypeSpec(eventClass: OSType(kEventClassKeyboard), eventKind: UInt32(kEventHotKeyPressed)),
+            EventTypeSpec(eventClass: OSType(kEventClassKeyboard), eventKind: UInt32(kEventHotKeyReleased)),
+        ]
+        let callback: EventHandlerUPP = { _, event, userData in
+            guard let event, let userData else { return OSStatus(eventNotHandledErr) }
+            let hotkey = Unmanaged<PushToTalkHotkey>.fromOpaque(userData).takeUnretainedValue()
+            return hotkey.handle(event)
         }
-        if let local = NSEvent.addLocalMonitorForEvents(matching: mask, handler: { [weak self] e in
-            (self?.process(e) ?? false) ? nil : e
-        }) {
-            monitors.append(local)
+        // passUnretained is safe: the handler is removed in stop()/deinit before this object goes away.
+        let status = InstallEventHandler(GetApplicationEventTarget(), callback, specs.count, &specs,
+                                         Unmanaged.passUnretained(self).toOpaque(), &handlerRef)
+        guard status == noErr else {
+            FileLog.body.warn("push-to-talk: InstallEventHandler failed (\(status))")
+            return
+        }
+        let id = EventHotKeyID(signature: Self.signature, id: Self.hotKeyID)
+        let registered = RegisterEventHotKey(UInt32(kVK_Space), UInt32(optionKey), id, GetApplicationEventTarget(), 0, &hotKeyRef)
+        if registered != noErr {
+            FileLog.body.warn("push-to-talk: ⌥Space is taken by another app (\(registered)); voice hotkey is off")
+            stop()
         }
     }
 
-    /// Returns true when the event belongs to push-to-talk (so a local monitor can swallow it).
-    private func process(_ event: NSEvent) -> Bool {
-        switch event.type {
-        case .keyDown:
-            if isActive { return event.keyCode == HotkeyMatcher.spaceKeyCode }  // repeats while held
-            guard !event.isARepeat, HotkeyMatcher.isPushToTalk(keyCode: event.keyCode, flags: Self.flags(event)) else { return false }
+    /// Unregisters the hotkey and its handler. Safe to call more than once.
+    func stop() {
+        if let hotKeyRef { UnregisterEventHotKey(hotKeyRef) }
+        if let handlerRef { RemoveEventHandler(handlerRef) }
+        hotKeyRef = nil
+        handlerRef = nil
+        isActive = false
+    }
+
+    deinit { stop() }
+
+    private func handle(_ event: EventRef) -> OSStatus {
+        var id = EventHotKeyID()
+        let status = GetEventParameter(event, EventParamName(kEventParamDirectObject), EventParamType(typeEventHotKeyID),
+                                       nil, MemoryLayout<EventHotKeyID>.size, nil, &id)
+        guard status == noErr, id.signature == Self.signature, id.id == Self.hotKeyID else {
+            return OSStatus(eventNotHandledErr)
+        }
+        switch Int(GetEventKind(event)) {
+        case kEventHotKeyPressed:
+            guard !isActive else { break }  // auto-repeat while held
             isActive = true
             onDown?()
-            return true
-        case .keyUp:
-            guard isActive, event.keyCode == HotkeyMatcher.spaceKeyCode else { return false }
-            end()
-            return true
-        case .flagsChanged:
-            if isActive && !event.modifierFlags.contains(.option) { end() }
-            return false
+        case kEventHotKeyReleased:
+            guard isActive else { break }
+            isActive = false
+            onUp?()
         default:
-            return false
+            return OSStatus(eventNotHandledErr)
         }
-    }
-
-    private func end() {
-        isActive = false
-        onUp?()
-    }
-
-    private static func flags(_ event: NSEvent) -> ModifierFlagsLike {
-        let f = event.modifierFlags.intersection(.deviceIndependentFlagsMask)
-        var out: ModifierFlagsLike = []
-        if f.contains(.shift) { out.insert(.shift) }
-        if f.contains(.control) { out.insert(.control) }
-        if f.contains(.option) { out.insert(.option) }
-        if f.contains(.command) { out.insert(.command) }
-        return out
+        return noErr
     }
 }

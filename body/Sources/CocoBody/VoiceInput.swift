@@ -1,4 +1,5 @@
 import AVFoundation
+import CocoCore
 import Foundation
 import Speech
 
@@ -16,16 +17,13 @@ final class VoiceInput {
 
     static let maxSeconds: TimeInterval = 60
     /// How long to wait for the recogniser's final result after the key is released before using the last partial.
-    private static let finalGrace: TimeInterval = 2
+    private static let finalGrace: TimeInterval = 1
 
-    private enum State { case idle, listening, finishing }
-    private var state = State.idle
+    private var session = VoiceSession()
     private let recognizer = SFSpeechRecognizer(locale: Locale(identifier: "en-US"))
     private var engine: AVAudioEngine?
     private var request: SFSpeechAudioBufferRecognitionRequest?
     private var task: SFSpeechRecognitionTask?
-    private var latest = ""
-    private var session = 0
     private var maxTimer: Timer?
     private var graceTimer: Timer?
 
@@ -37,10 +35,12 @@ final class VoiceInput {
         }
     }
 
-    /// Starts listening. Returns false (after reporting why via `onProblem`) when it can't.
+    /// Starts listening. Returns false (after reporting why via `onProblem`) when it can't, or when already
+    /// listening. If the previous session is still waiting for its final transcript, that session is finalized
+    /// right away (its `onFinal` fires with whatever was heard) before the new one starts.
     @discardableResult
     func start() -> Bool {
-        guard state == .idle else { return false }
+        guard session.phase != .listening else { return false }
         guard Self.usageDescriptionsPresent else {
             onProblem?("Voice needs the bundled Coco.app (scripts/bundle.sh).")
             return false
@@ -78,12 +78,19 @@ final class VoiceInput {
             return false
         }
 
-        session += 1
-        let current = session
-        latest = ""
+        guard case .started(let flushed) = session.begin() else {
+            engine.stop()
+            input.removeTap(onBus: 0)
+            return false
+        }
+        if let flushed {
+            // Quick re-press during the grace period: deliver the previous session now rather than drop it.
+            tearDownRecognition()
+            onFinal?(flushed)
+        }
+        let current = session.id
         self.engine = engine
         self.request = request
-        state = .listening
         task = recognizer.recognitionTask(with: request) { [weak self] result, error in
             let text = result?.bestTranscription.formattedString
             let isFinal = result?.isFinal ?? false
@@ -94,40 +101,37 @@ final class VoiceInput {
         return true
     }
 
-    /// Stops capturing audio and asks for the final transcript; `onFinal` follows shortly.
+    /// Stops capturing audio and asks for the final transcript; `onFinal` follows within `finalGrace`.
     func stop() {
-        guard state == .listening else { return }
-        state = .finishing
+        guard session.end() else { return }
         stopAudio()
         request?.endAudio()
-        let current = session
+        maxTimer?.invalidate(); maxTimer = nil
+        let current = session.id
         graceTimer = Timer.scheduledTimer(withTimeInterval: Self.finalGrace, repeats: false) { [weak self] _ in
-            guard let self, self.session == current else { return }
-            self.finish()
+            self?.finish(session: current)
         }
     }
 
     private func handle(session current: Int, text: String?, isFinal: Bool, failed: Bool) {
-        guard current == session, state != .idle else { return }
-        if let text { latest = text }
-        if state == .listening, let text, !isFinal { onPartial?(text) }
-        if isFinal || failed {
-            // An error (e.g. "no speech detected") ends the session with whatever was heard.
-            if state == .listening { stopAudio() }
-            finish()
-        }
+        if let text, session.heard(text, session: current), !isFinal { onPartial?(text) }
+        // A final result, or an error (e.g. "no speech detected"), ends the session with whatever was heard.
+        if isFinal || failed { finish(session: current) }
     }
 
-    private func finish() {
-        guard state != .idle else { return }
-        state = .idle
+    private func finish(session current: Int) {
+        guard let text = session.finish(session: current) else { return }
+        tearDownRecognition()
+        onFinal?(text)
+    }
+
+    /// Releases the audio engine, timers and recogniser task of the session that just ended.
+    private func tearDownRecognition() {
         stopAudio()
         maxTimer?.invalidate(); maxTimer = nil
         graceTimer?.invalidate(); graceTimer = nil
         task?.cancel(); task = nil
         request = nil
-        session += 1  // ignore any late callbacks from this session
-        onFinal?(latest.trimmingCharacters(in: .whitespacesAndNewlines))
     }
 
     private func stopAudio() {

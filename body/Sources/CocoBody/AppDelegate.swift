@@ -114,14 +114,16 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         voiceOutput.onSpeakingChanged = { [weak self] speaking in self?.overlay.setVoiceSpeaking(speaking) }
     }
 
+    /// Also used for a quick re-press while the previous session is still finishing: `start()` then delivers
+    /// that session's transcript (via endListening) before the new one begins.
     private func beginListening() {
-        guard !recording else { return }
         voiceOutput.stop()  // barge-in: the user talking always cuts Coco off
         sensor.selfRecording = true  // set before the mic starts so Coco's own recording never reads as a call
         guard voiceInput.start() else {
-            sensor.selfRecording = false
+            sensor.selfRecording = recording
             return
         }
+        sensor.selfRecording = true  // a flushed previous session's endListening cleared it
         recording = true
         overlay.setListening(true)
     }
@@ -132,6 +134,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         if !text.isEmpty { overlay.setListeningText(text) }  // the final transcript can differ from the last partial
         overlay.setListening(false, heardSomething: !text.isEmpty)
         guard !text.isEmpty else { return }
+        chat.append(fromUser: true, text: "🎙 \(text)")  // like typed lines, marked as spoken
         brain.send(.utterance(UtterancePayload(text: String(text.prefix(Self.chatMaxChars)), source: .voice)))
     }
 
