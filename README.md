@@ -23,5 +23,8 @@ On first launch Coco opens a permissions window: grant Screen Recording, Accessi
     cd brain && npm test            # unit + replay tests
     cd brain && npm run eval:persona  # live check against your local model
     cd body && ./scripts/test.sh    # Swift tests (works without Xcode)
+    cd body && ./scripts/bundle.sh  # release build + signed .app
+
+`test.sh` and `bundle.sh` build Swift into `~/Library/Caches/coco-swift-build` rather than `body/.build`: a `build.db` under a repo checked out inside `~/Downloads` can throw intermittent "disk I/O error"s. Override the location with `COCO_SWIFT_SCRATCH=/some/path`.
 
 Logs: `~/Library/Logs/Coco/`. Data: `~/Library/Application Support/Coco/coco.db`.

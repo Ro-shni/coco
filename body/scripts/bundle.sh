@@ -3,17 +3,23 @@
 # permissions attach to Coco itself (not to Terminal).
 # Optional: COCO_SIGN_IDENTITY="Coco Dev" signs with a self-signed certificate so
 # permissions survive rebuilds (ad-hoc signatures change every build).
+#
+# The scratch path is redirected out of the repo (which lives under ~/Downloads here):
+# a build.db under Downloads intermittently throws "disk I/O error" (App Sandbox/Downloads
+# access churn), which a scratch path elsewhere avoids. Override with COCO_SWIFT_SCRATCH.
 set -euo pipefail
 ROOT="$(cd "$(dirname "$0")/../.." && pwd)"
 BODY="$ROOT/body"
 APP="$BODY/build/Coco.app"
+SCRATCH="${COCO_SWIFT_SCRATCH:-$HOME/Library/Caches/coco-swift-build}"
 NODE="${COCO_NODE:-$(command -v node || true)}"
 [ -n "$NODE" ] && [ -x "$NODE" ] || { echo "node not found; install Node 26+ or set COCO_NODE" >&2; exit 1; }
 
-(cd "$BODY" && swift build -c release)
+mkdir -p "$SCRATCH"
+(cd "$BODY" && swift build -c release --scratch-path "$SCRATCH")
 rm -rf "$APP"
 mkdir -p "$APP/Contents/MacOS" "$APP/Contents/Resources"
-cp "$BODY/.build/release/CocoBody" "$APP/Contents/MacOS/CocoBody"
+cp "$SCRATCH/release/CocoBody" "$APP/Contents/MacOS/CocoBody"
 
 cat > "$APP/Contents/Info.plist" <<PLIST
 <?xml version="1.0" encoding="UTF-8"?>
