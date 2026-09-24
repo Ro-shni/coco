@@ -122,11 +122,12 @@ describe('ChatResponder', () => {
     expect(gw.calls[0]!.messages[0]!.content).toContain('only if');
   });
 
-  it('asks for a rewrite when the reply claims an action, and keeps an honest rewrite', async () => {
-    const gw = new ScriptedGateway((_, i) => (i === 0 ? 'Sent to Prince.' : "I can't send messages. Here's a draft: \"Approved, go ahead.\""));
+  it('asks for a rewrite when the reply claims an action, and keeps an honest rewrite that makes no draft claim', async () => {
+    const gw = new ScriptedGateway((_, i) => (i === 0 ? 'Sent to Prince.' : "I can't send messages, but you could say: \"Approved, go ahead.\""));
     const reply = await make(gw).chat.reply('send', { timeline: 't', incidentMode: false });
-    expect(reply).toEqual({ text: "I can't send messages. Here's a draft: \"Approved, go ahead.\"", draft: null });
+    expect(reply).toEqual({ text: "I can't send messages, but you could say: \"Approved, go ahead.\"", draft: null });
     expect(gw.calls[1]!.messages.at(-1)!.content).toContain('claims an action you did not perform: "Sent"');
+    expect(gw.calls).toHaveLength(2); // no draft claimed in the honest rewrite: no third call
   });
 
   it('incident regression: a reply that keeps claiming it sent something is replaced by the safe fallback', async () => {
@@ -189,6 +190,37 @@ describe('ChatResponder', () => {
       expect(reply).toEqual({ text: NO_DRAFT_FALLBACK, draft: null });
       expect(reply.text).toBe("I haven't written a draft yet — tell me what you'd like to say and I'll draft it.");
       expect(memory.recentTurns(1)[0]!.text).toBe(NO_DRAFT_FALLBACK);
+    });
+
+    it('re-checks the draft claim on the honesty-rewritten text too, not just a clean first reply: falls back when it still claims a draft with none included', async () => {
+      const gw = new ScriptedGateway((_, i) => (i === 0 ? "Great question! I've drafted a reply for you!" : "I've drafted a reply for you."));
+      const { memory, chat } = make(gw);
+      const reply = await chat.reply('draft a reply', { timeline: 't', incidentMode: false });
+      expect(gw.calls).toHaveLength(3); // initial + honesty rewrite (filler/exclamation) + draft-claim rewrite
+      expect(gw.calls[1]!.messages.at(-1)!.content).toContain('filler');
+      expect(gw.calls[2]!.messages.at(-1)!.content).toBe(
+        "You said you drafted a reply but didn't include it. Output the exact message inside a ```draft fenced block, then one short line.",
+      );
+      expect(reply).toEqual({ text: NO_DRAFT_FALLBACK, draft: null });
+      expect(memory.recentTurns(1)[0]!.text).toBe(NO_DRAFT_FALLBACK);
+    });
+
+    it('re-checks the draft claim on the honesty-rewritten text too: extracts the draft once the model finally includes one', async () => {
+      const gw = new ScriptedGateway((_, i) => {
+        if (i === 0) return "Great question! I've drafted a reply for you!";
+        if (i === 1) return "I've drafted a reply for you.";
+        return 'Here it is.\n```draft\nSounds good, see you at 3pm.\n```\nPaste whenever.';
+      });
+      const reply = await make(gw).chat.reply('draft a reply', { timeline: 't', incidentMode: false });
+      expect(gw.calls).toHaveLength(3); // hits the 3-call cap exactly, never a 4th
+      expect(reply).toEqual({ text: 'Here it is.\nPaste whenever.', draft: 'Sounds good, see you at 3pm.' });
+    });
+
+    it('never treats its own fallback text (CANNOT_ACT_FALLBACK) as a draft claim, even though it mentions "draft"', async () => {
+      const gw = new ScriptedGateway(() => "Sent to Prince. He's waiting for the approval.");
+      const reply = await make(gw).chat.reply('send', { timeline: 't', incidentMode: false });
+      expect(gw.calls).toHaveLength(2); // honesty rewrite only — no third call chasing a draft claim in our own fallback text
+      expect(reply).toEqual({ text: CANNOT_ACT_FALLBACK, draft: null });
     });
   });
 });

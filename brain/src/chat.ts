@@ -13,6 +13,8 @@ export interface ChatContext {
 }
 
 const CHAT_MAX_SENTENCES = 6;
+/** Hard cap on model calls per reply(): initial + one honesty rewrite + one draft-claim rewrite, at most. */
+const MAX_MODEL_CALLS = 3;
 export const CANNOT_ACT_FALLBACK =
   "I can't send or post anything yet — I can only draft text here and bring apps to the front. Want a draft you can paste?";
 const DRAFT_CLAIM_REWRITE_PROMPT =
@@ -38,7 +40,13 @@ export class ChatResponder {
   async reply(text: string, ctx: ChatContext): Promise<ExtractedDraft> {
     const { gateway, memory } = this.deps;
     const messages = this.buildMessages(text, ctx);
-    let raw = (await gateway.chat({ messages, priority: PRIORITY.user, temperature: 0.8 })).trim();
+    let calls = 0;
+    const callModel = async (msgs: ChatMessage[], temperature: number): Promise<string> => {
+      calls++;
+      return (await gateway.chat({ messages: msgs, priority: PRIORITY.user, temperature })).trim();
+    };
+
+    let raw = await callModel(messages, 0.8);
     let extracted = extractDraft(raw);
 
     // Honesty check runs on the non-draft text only: the draft is a message the user will send, not a claim Coco is making.
@@ -49,21 +57,25 @@ export class ChatResponder {
         { role: 'assistant', content: raw },
         { role: 'user', content: `Rewrite that reply fixing: ${check.problems.join('; ')}. Output only the rewritten reply.` },
       ];
-      raw = (await gateway.chat({ messages: rewrite, priority: PRIORITY.user, temperature: 0.7 })).trim();
+      raw = await callModel(rewrite, 0.7);
       extracted = extractDraft(raw);
       if (claimsUnperformedAction(extracted.text)) {
         raw = CANNOT_ACT_FALLBACK;
         extracted = { text: CANNOT_ACT_FALLBACK, draft: null };
       }
-    } else if (extracted.draft === null && claimsDraftExists(extracted.text)) {
-      // Consistency check: the model sometimes claims it wrote a draft without actually including one.
-      // Only runs on a reply that passed the honesty check cleanly — an honesty rewrite's outcome stands as final.
+    }
+
+    // Consistency check: the model sometimes claims it wrote a draft without actually including one. Runs on
+    // the final text of whichever path above settled (not just a clean, non-rewritten reply) — but never on
+    // our own fallback text, only on model-produced text — and at most once, within the per-reply call budget.
+    const isOwnFallback = extracted.text === CANNOT_ACT_FALLBACK || extracted.text === NO_DRAFT_FALLBACK;
+    if (extracted.draft === null && !isOwnFallback && claimsDraftExists(extracted.text) && calls < MAX_MODEL_CALLS) {
       const rewrite: ChatMessage[] = [
         ...messages,
         { role: 'assistant', content: raw },
         { role: 'user', content: DRAFT_CLAIM_REWRITE_PROMPT },
       ];
-      raw = (await gateway.chat({ messages: rewrite, priority: PRIORITY.user, temperature: 0.7 })).trim();
+      raw = await callModel(rewrite, 0.7);
       extracted = extractDraft(raw);
       if (extracted.draft === null) {
         extracted = { text: NO_DRAFT_FALLBACK, draft: null };

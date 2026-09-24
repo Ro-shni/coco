@@ -630,13 +630,27 @@ describe('draft & paste', () => {
     });
   });
 
-  it('a draft reply with no current context (or a private one) carries the draft but no draftApp/chip', async () => {
+  it('a draft reply with no current context carries the draft but no draftApp/chip', async () => {
     const s = setup();
     s.reply.mockResolvedValue(draftReply);
     await s.o.handle(utter('draft a reply to Prince'));
     const said = s.says().at(-1)!;
     expect(said).toMatchObject({ kind: 'reply', text: draftReply.text, draft: draftReply.draft, chips: [] });
     expect(said.draftApp).toBeUndefined();
+  });
+
+  it('a draft reply on a private context carries the draft but no draftApp/chip, and does not set lastDraft', async () => {
+    const s = setup();
+    s.reply.mockResolvedValue(draftReply);
+    await s.o.handle(ctx({ private: true, app: '1Password', bundleId: 'com.agilebits.onepassword7', windowTitle: '', url: undefined, selection: undefined, ocrText: undefined }));
+    await s.o.handle(utter('draft a reply to Prince'));
+    const said = s.says().at(-1)!;
+    expect(said).toMatchObject({ kind: 'reply', text: draftReply.text, draft: draftReply.draft, chips: [] });
+    expect(said.draftApp).toBeUndefined();
+    // lastDraft was never set: "paste it" has nothing to paste, and no paste message is sent.
+    await s.o.handle(utter('paste it'));
+    expect(pasteMsgs(s)).toHaveLength(0);
+    expect(s.says().at(-1)).toMatchObject({ kind: 'reply', text: "There's no draft to paste yet." });
   });
 
   it('clicking the "paste into <App>" chip on the say that carried the draft sends a paste with the exact draft text', async () => {

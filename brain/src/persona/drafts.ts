@@ -1,7 +1,9 @@
 const MAX_DRAFT_CHARS = 4000;
 
-/** A ```draft fenced block (preferred). Captures everything between the opening fence and the closing ```. */
-const FENCED_DRAFT = /```draft[ \t]*\r?\n?([\s\S]*?)```/;
+/** A closed ```draft fenced block (preferred). Global: a reply may contain more than one. */
+const FENCED_DRAFT = /```draft[ \t]*\r?\n?([\s\S]*?)```/g;
+/** An unclosed ```draft fence (no closing ```): everything after it, to the end of the reply, is the draft. */
+const UNCLOSED_FENCED_DRAFT = /```draft[ \t]*\r?\n?([\s\S]*)$/;
 /** A line starting with "Draft:" — everything after it (rest of the line, plus any further lines) is the draft. */
 const LINE_DRAFT = /^[ \t]*Draft:[ \t]?/im;
 /** Coco claiming (in the non-draft text) that it wrote a draft — used to catch a claim with no matching draft block. */
@@ -13,7 +15,7 @@ export function claimsDraftExists(text: string): boolean {
 }
 
 export interface ExtractedDraft {
-  /** The reply with the draft block removed, trimmed. Any lead-in sentence (and trailing line, for the fenced form) is kept. */
+  /** The reply with the draft block(s) removed, trimmed. Any lead-in/trailing text is kept; raw ```draft markup never survives into this field. */
   text: string;
   /** The drafted message, trimmed and capped at 4000 chars, or null when there was no draft or it was empty. */
   draft: string | null;
@@ -25,31 +27,46 @@ function normalizeDraft(raw: string): string | null {
   return trimmed.length > MAX_DRAFT_CHARS ? trimmed.slice(0, MAX_DRAFT_CHARS) : trimmed;
 }
 
-/** Joins the text surrounding a removed block, dropping either side if it is blank after trimming. */
-function joinAround(before: string, after: string): string {
-  const b = before.trim();
-  const a = after.trim();
-  if (b !== '' && a !== '') return `${b}\n${a}`;
-  return b !== '' ? b : a;
+/** Joins the non-blank segments left after removing one or more blocks from a reply. */
+function joinSegments(segments: readonly string[]): string {
+  return segments
+    .map((s) => s.trim())
+    .filter((s) => s !== '')
+    .join('\n');
 }
 
 /**
- * Splits a model reply into the spoken text and an optional draft message, recognising a
- * ```draft fenced block (preferred) or a "Draft:" line as the fallback format. See ExtractedDraft.
+ * Splits a model reply into the spoken text and an optional draft message. Recognises, in priority order:
+ * one or more closed ```draft fenced blocks (the first is the draft; all are stripped from the text), an
+ * unclosed ```draft fence (everything after it, to the end, is the draft — or the bare marker is stripped
+ * if that's empty), or a "Draft:" line (fallback format). See ExtractedDraft.
  */
 export function extractDraft(reply: string): ExtractedDraft {
-  const fenced = reply.match(FENCED_DRAFT);
-  if (fenced && fenced.index !== undefined) {
-    const draft = normalizeDraft(fenced[1] ?? '');
-    const before = reply.slice(0, fenced.index);
-    const after = reply.slice(fenced.index + fenced[0].length);
-    return { text: joinAround(before, after), draft };
+  const closed = [...reply.matchAll(FENCED_DRAFT)];
+  if (closed.length > 0) {
+    const draft = normalizeDraft(closed[0]![1] ?? '');
+    const segments: string[] = [];
+    let cursor = 0;
+    for (const m of closed) {
+      segments.push(reply.slice(cursor, m.index));
+      cursor = m.index! + m[0].length;
+    }
+    segments.push(reply.slice(cursor));
+    return { text: joinSegments(segments), draft };
   }
+
+  const unclosed = reply.match(UNCLOSED_FENCED_DRAFT);
+  if (unclosed && unclosed.index !== undefined) {
+    const draft = normalizeDraft(unclosed[1] ?? '');
+    return { text: reply.slice(0, unclosed.index).trim(), draft };
+  }
+
   const line = reply.match(LINE_DRAFT);
   if (line && line.index !== undefined) {
     const before = reply.slice(0, line.index);
     const after = reply.slice(line.index + line[0].length);
     return { text: before.trim(), draft: normalizeDraft(after) };
   }
+
   return { text: reply.trim(), draft: null };
 }

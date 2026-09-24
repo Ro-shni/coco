@@ -62,6 +62,47 @@ describe('extractDraft', () => {
     expect(result.draft).toHaveLength(4000);
     expect(result.draft).toBe(long.slice(0, 4000));
   });
+
+  describe('an unclosed fence (the model got cut off before the closing ```)', () => {
+    it('treats everything after ```draft as the draft, and never leaves the raw marker in text', () => {
+      const reply = "Here's what I've got:\n```draft\nHi Prince, let's sync at 3pm.";
+      const result = extractDraft(reply);
+      expect(result).toEqual({ text: "Here's what I've got:", draft: "Hi Prince, let's sync at 3pm." });
+      expect(result.text).not.toContain('```');
+    });
+
+    it('strips the bare marker (draft null) when there is nothing after it', () => {
+      const result = extractDraft('Nothing yet.\n```draft');
+      expect(result).toEqual({ text: 'Nothing yet.', draft: null });
+      expect(result.text).not.toContain('```');
+    });
+
+    it('strips the bare marker when only whitespace follows it', () => {
+      const result = extractDraft('Nothing yet.\n```draft\n   \n');
+      expect(result).toEqual({ text: 'Nothing yet.', draft: null });
+      expect(result.text).not.toContain('```');
+    });
+  });
+
+  describe('multiple fenced draft blocks', () => {
+    it('uses the first block as the draft and removes every ```draft…``` block from the text', () => {
+      const reply =
+        'First take:\n```draft\nHi there.\n```\nActually, try this instead:\n```draft\nHello!\n```\nPick whichever.';
+      const result = extractDraft(reply);
+      expect(result).toEqual({
+        text: 'First take:\nActually, try this instead:\nPick whichever.',
+        draft: 'Hi there.',
+      });
+      expect(result.text).not.toContain('```');
+    });
+
+    it('handles three blocks, still preferring the first', () => {
+      const reply = '```draft\nOne\n```\n```draft\nTwo\n```\n```draft\nThree\n```\nDone.';
+      const result = extractDraft(reply);
+      expect(result).toEqual({ text: 'Done.', draft: 'One' });
+      expect(result.text).not.toContain('```');
+    });
+  });
 });
 
 describe('claimsDraftExists', () => {
