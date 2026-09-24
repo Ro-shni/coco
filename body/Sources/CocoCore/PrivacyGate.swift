@@ -36,6 +36,8 @@ public struct PrivacyGate {
     public func isPrivate(bundleId: String, url: String?, title: String) -> Bool {
         if bundleIds.contains(bundleId) { return true }
         if let url, Self.matches(urlPatterns, url) { return true }
+        // A browser whose URL lookup failed (nil) must not fail open: also check the deny-URL patterns against the title.
+        if Self.matches(urlPatterns, title) { return true }
         return Self.matches(titlePatterns, title)
     }
 

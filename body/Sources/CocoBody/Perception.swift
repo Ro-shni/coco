@@ -16,6 +16,7 @@ final class Perception {
     private var lastBoxes: [TextBox] = []
     private var lastWindowBounds: CGRect = .zero
     private var warnedScreenRecording = false
+    private var warnedMissingURLBundleIds: Set<String> = []
 
     private static let ocrMaxDimension: CGFloat = 1600
     private static let keyframeMaxDimension: CGFloat = 1280
@@ -25,6 +26,11 @@ final class Perception {
 
     func start() {
         timer = Timer.scheduledTimer(withTimeInterval: 1, repeats: true) { [weak self] _ in self?.step() }
+    }
+
+    /// Call after the brain (re)connects: it has no memory of the last context we sent, so force the next sample through.
+    func resendContext() {
+        detector.reset()
     }
 
     /// Main thread only.
@@ -62,13 +68,15 @@ final class Perception {
             return
         }
         guard let snap = AXReader.snapshot(), snap.bundleId != Bundle.main.bundleIdentifier else { return }
+        warnMissingURLOnce(snap)
         if isPrivate(snap) {
             lastBoxes = []
             emit(ContextPayload(app: snap.app, bundleId: snap.bundleId, windowTitle: "", isPrivate: true, ts: nowMs()))
             return
         }
-        let base = ContextPayload(app: snap.app, bundleId: snap.bundleId, windowTitle: snap.windowTitle, url: snap.url,
-                                  selection: snap.selection.map(Redactor.redact), isPrivate: false, ts: nowMs())
+        let base = ContextPayload(app: snap.app, bundleId: snap.bundleId, windowTitle: Redactor.redact(snap.windowTitle),
+                                  url: snap.url.map(Redactor.redact), selection: snap.selection.map(Redactor.redact),
+                                  isPrivate: false, ts: nowMs())
         guard CGPreflightScreenCaptureAccess() else {
             warnScreenRecordingOnce()
             emit(base)
@@ -92,7 +100,9 @@ final class Perception {
                 self.lastWindowBounds = window.bounds
                 if let boxes {
                     self.lastBoxes = boxes
-                    self.lastOCR = Redactor.redact(String(boxes.map(\.text).joined(separator: "\n").prefix(Self.ocrMaxChars)))
+                    // Redact before truncating: a secret straddling the 4000-char cutoff must still be caught.
+                    let joined = boxes.map(\.text).joined(separator: "\n")
+                    self.lastOCR = String(Redactor.redact(joined).prefix(Self.ocrMaxChars))
                 }
                 var payload = base
                 payload.ocrText = self.lastOCR.isEmpty ? nil : self.lastOCR
@@ -102,6 +112,13 @@ final class Perception {
             FileLog.body.warn("capture failed: \(error.localizedDescription)")
             await MainActor.run { self.emit(base) }
         }
+    }
+
+    /// A browser whose AX URL lookup came back nil relies on the title-based privacy fallback; that's worth knowing about.
+    private func warnMissingURLOnce(_ snap: AXSnapshot) {
+        guard snap.url == nil, AXReader.browsers.contains(snap.bundleId), !warnedMissingURLBundleIds.contains(snap.bundleId) else { return }
+        warnedMissingURLBundleIds.insert(snap.bundleId)
+        FileLog.body.info("browser URL lookup returned nil for \(snap.bundleId)")
     }
 
     private func warnScreenRecordingOnce() {

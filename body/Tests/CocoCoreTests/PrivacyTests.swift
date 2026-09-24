@@ -24,6 +24,11 @@ import Testing
         #expect(!gate.isPrivate(bundleId: "com.google.Chrome", url: "https://grafana.example.com/d/abc", title: "supply-prd - Grafana"))
     }
 
+    @Test func deniesByTitleWhenTheUrlLookupFailed() {
+        // A browser tab whose AX URL lookup came back nil must not fail open just because url is nil.
+        #expect(gate.isPrivate(bundleId: "com.google.Chrome", url: nil, title: "HDFC Bank NetBanking - hdfcbank.com"))
+    }
+
     @Test func invalidRegexThrows() {
         #expect(throws: (any Error).self) {
             try PrivacyGate(config: PrivacyConfig(denyBundleIds: [], denyUrlPatterns: ["("], denyTitlePatterns: []))
@@ -64,6 +69,13 @@ import Testing
     @Test func redactsPemBlocks() {
         let pem = "a\n-----BEGIN RSA PRIVATE KEY-----\nMIIEow\nabc\n-----END RSA PRIVATE KEY-----\nb"
         #expect(Redactor.redact(pem) == "a\n[REDACTED]\nb")
+    }
+
+    @Test func redactsATruncatedPemWithNoEndLine() {
+        let pem = "before\n-----BEGIN RSA PRIVATE KEY-----\nMIIEowIBAAKCAQEA...\nmore key data that got cut off"
+        let out = Redactor.redact(pem)
+        #expect(out == "before\n[REDACTED]")
+        #expect(!out.contains("MIIEow"))
     }
 
     @Test func leavesNormalTextAlone() {

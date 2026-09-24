@@ -11,7 +11,7 @@ struct AXSnapshot {
 }
 
 enum AXReader {
-    private static let browsers: Set<String> = [
+    static let browsers: Set<String> = [
         "com.apple.Safari", "com.google.Chrome", "company.thebrowser.Browser", "com.brave.Browser",
         "com.microsoft.edgemac", "org.mozilla.firefox",
     ]
@@ -21,6 +21,9 @@ enum AXReader {
         guard let app = NSWorkspace.shared.frontmostApplication else { return nil }
         let bundleId = app.bundleIdentifier ?? ""
         let axApp = AXUIElementCreateApplication(app.processIdentifier)
+        // Bound how long a misbehaving target app can stall us: snapshot() still runs synchronously on the main
+        // thread for M1, so this timeout is what keeps a slow/hung AX server from hanging the UI.
+        AXUIElementSetMessagingTimeout(axApp, 0.25)
         let window = element(axApp, kAXFocusedWindowAttribute)
         let title = window.flatMap { string($0, kAXTitleAttribute) } ?? ""
         let focused = element(axApp, kAXFocusedUIElementAttribute)

@@ -13,6 +13,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private var paused = false
     private var hotkeyMonitors: [Any] = []
     private static let pauseKeyCode: UInt16 = 35  // "P"
+    /// Keep in sync with the brain's UtterancePayload.text schema (brain/src/protocol.ts): past this, the brain
+    /// rejects the message outright and it is silently dropped.
+    private static let chatMaxChars = 4000
 
     func applicationDidFinishLaunching(_ notification: Notification) {
         FileLog.body.info("launching; brain=\(paths.brainDir.path) config=\(paths.configDir.path)")
@@ -40,6 +43,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                 self.overlay.setMood(.sleepy)
                 self.overlay.showLocal("My brain won't start: \(why)")
             }
+            if status == .connected {
+                // The (re)started brain has no memory of the last context we sent; re-send the current one.
+                self.perception.resendContext()
+            }
         }
         brain.onMessage = { [weak self] msg in self?.handle(msg) }
         perception.onContext = { [weak self] payload in self?.brain.send(.context(payload)) }
@@ -52,8 +59,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         overlay.onChip = { [weak self] id, choice in self?.brain.send(.chip(ChipPayload(nudgeId: id, choice: choice))) }
         overlay.onOpenChat = { [weak self] in self?.chat.show() }
         chat.onSend = { [weak self] text in
-            self?.chat.append(fromUser: true, text: text)
-            self?.brain.send(.utterance(UtterancePayload(text: text, source: .chat)))
+            guard let self else { return }
+            let wasTruncated = text.count > Self.chatMaxChars
+            // The user's own line always shows what they typed, in full, with a note if the brain will see less.
+            self.chat.append(fromUser: true, text: wasTruncated ? "\(text) …(truncated)" : text)
+            self.brain.send(.utterance(UtterancePayload(text: String(text.prefix(Self.chatMaxChars)), source: .chat)))
         }
         menu.onOpenChat = { [weak self] in self?.chat.show() }
         menu.onPermissions = { [weak self] in self?.permissions.show() }
