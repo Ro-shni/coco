@@ -1,5 +1,8 @@
 .superpowers/
 node_modules/
+dist/
 .build/
+build/
+coverage/
 *.log
 .DS_Store
