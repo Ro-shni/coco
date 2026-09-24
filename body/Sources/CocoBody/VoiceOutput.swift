@@ -57,7 +57,8 @@ final class VoiceOutput: NSObject, AVSpeechSynthesizerDelegate {
     func speak(_ text: String) {
         let cleaned = SpeechText.clean(text)
         guard !cleaned.isEmpty else { return }
-        if Self.isSystemVoiceActive() {
+        let saved = UserDefaults.standard.string(forKey: Self.voiceIdKey)
+        if saved == nil || saved == Self.systemVoiceId {
             if synthesizer.isSpeaking { synthesizer.stopSpeaking(at: .immediate) }
             systemVoice.speak(cleaned)
             return
@@ -65,7 +66,9 @@ final class VoiceOutput: NSObject, AVSpeechSynthesizerDelegate {
         systemVoice.stop()
         if synthesizer.isSpeaking { synthesizer.stopSpeaking(at: .immediate) }
         let utterance = AVSpeechUtterance(string: cleaned)
-        if let id = Self.currentVoiceId() { utterance.voice = AVSpeechSynthesisVoice(identifier: id) }
+        if let id = VoicePicker.choose(Self.englishVoices(), preferredIdentifier: saved) {
+            utterance.voice = AVSpeechSynthesisVoice(identifier: id)
+        }
         utterance.rate = AVSpeechUtteranceDefaultSpeechRate * 0.92
         utterance.pitchMultiplier = 1.1
         utterance.preUtteranceDelay = 0.05

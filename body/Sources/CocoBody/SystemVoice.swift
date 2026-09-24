@@ -1,51 +1,35 @@
-import AppKit
+import CocoCore
+import Darwin
 import Foundation
 
 /// Speaks through the macOS System Voice (Settings ▸ Accessibility ▸ Spoken Content) — whatever voice
-/// the user picked there, including a Siri voice, which AVSpeechSynthesizer cannot reach. This file
-/// isolates the one API that can: the deprecated-but-still-functional `NSSpeechSynthesizer(voice: nil)`,
-/// which speaks with the system default voice, same as `say`. If it fails to initialize at all, speech
-/// falls back to spawning `/usr/bin/say` with the text on stdin (no `-v`, so it too uses the system voice).
+/// the user picked there, including a Siri voice. The only reliable way to reach it is `/usr/bin/say`
+/// with no `-v` flag: `NSSpeechSynthesizer(voice: nil)` almost always *initializes*, but its legacy
+/// engine can't render Siri/neural system voices and silently falls back to a classic one, so it isn't
+/// used here at all.
 final class SystemVoiceSpeaker: NSObject {
-    /// True while speech (either path) is in progress.
+    /// True while `say` is running.
     var onSpeakingChanged: ((Bool) -> Void)?
 
-    private var synth: NSSpeechSynthesizer?
+    /// How long after SIGTERM we wait before escalating to SIGKILL, so `stop()` can never hang and never
+    /// leaves a zombie `say` process behind.
+    private static let killEscalationDelay: TimeInterval = 0.2
+
     private var sayProcess: Process?
 
-    override init() {
-        super.init()
-        let s = NSSpeechSynthesizer(voice: nil)
-        if let s {
-            s.delegate = self
-            s.rate = s.rate * 0.92  // sweeter, calmer delivery; pitch is left alone — Siri voices ignore it
-        }
-        synth = s
-    }
-
-    func speak(_ text: String) {
+    func speak(_ text: String, rateWPM: Int = SayCommand.defaultRateWPM) {
         stop()
-        guard let synth else {
-            speakWithSayFallback(text)
-            return
-        }
-        _ = synth.startSpeaking(text)
-        report(true)
-    }
-
-    /// Stops speech immediately on either path — for barge-in.
-    func stop() {
-        synth?.stopSpeaking()
-        if let sayProcess, sayProcess.isRunning { sayProcess.terminate() }
-        sayProcess = nil
-    }
-
-    private func speakWithSayFallback(_ text: String) {
         let process = Process()
-        process.executableURL = URL(fileURLWithPath: "/usr/bin/say")
+        process.executableURL = URL(fileURLWithPath: SayCommand.executablePath)
+        process.arguments = SayCommand.args(rateWPM: rateWPM)
         let stdin = Pipe()
         process.standardInput = stdin
-        process.terminationHandler = { [weak self] _ in self?.report(false) }
+        // Foundation reaps the process and calls this once it exits, whether that's naturally, via
+        // SIGTERM from stop(), or via the SIGKILL escalation below — no waitUntilExit/zombie risk.
+        process.terminationHandler = { [weak self] _ in
+            self?.sayProcess = nil
+            self?.report(false)
+        }
         do {
             try process.run()
             sayProcess = process
@@ -53,17 +37,24 @@ final class SystemVoiceSpeaker: NSObject {
             stdin.fileHandleForWriting.write(text.data(using: .utf8) ?? Data())
             try? stdin.fileHandleForWriting.close()
         } catch {
+            sayProcess = nil
             report(false)
+        }
+    }
+
+    /// Stops speech immediately — for barge-in. Sends SIGTERM right away; if `say` hasn't exited within
+    /// `killEscalationDelay`, escalates to SIGKILL. Never blocks the caller.
+    func stop() {
+        guard let process = sayProcess else { return }
+        sayProcess = nil
+        guard process.isRunning else { return }
+        process.terminate()
+        DispatchQueue.main.asyncAfter(deadline: .now() + Self.killEscalationDelay) {
+            if process.isRunning { kill(process.processIdentifier, SIGKILL) }
         }
     }
 
     private func report(_ speaking: Bool) {
         DispatchQueue.main.async { [weak self] in self?.onSpeakingChanged?(speaking) }
-    }
-}
-
-extension SystemVoiceSpeaker: NSSpeechSynthesizerDelegate {
-    func speechSynthesizer(_ sender: NSSpeechSynthesizer, didFinishSpeaking finishedSpeaking: Bool) {
-        report(false)
     }
 }
