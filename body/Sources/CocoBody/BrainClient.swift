@@ -29,7 +29,9 @@ final class BrainClient {
 
     init(paths: CocoPaths) { self.paths = paths }
 
+    /// Call on the main thread; all callbacks are delivered on main.
     func start() {
+        dispatchPrecondition(condition: .onQueue(.main))
         onStatus?(.starting)
         writeTokenFile()
         launch()
@@ -50,14 +52,21 @@ final class BrainClient {
 
     private static func makeToken() -> String {
         var bytes = [UInt8](repeating: 0, count: 32)
-        _ = SecRandomCopyBytes(kSecRandomDefault, bytes.count, &bytes)
+        let status = SecRandomCopyBytes(kSecRandomDefault, bytes.count, &bytes)
+        precondition(status == errSecSuccess, "SecRandomCopyBytes failed: \(status)")
         return bytes.map { String(format: "%02x", $0) }.joined()
     }
 
     private func writeTokenFile() {
-        try? FileManager.default.createDirectory(at: paths.supportDir, withIntermediateDirectories: true)
+        do {
+            try FileManager.default.createDirectory(at: paths.supportDir, withIntermediateDirectories: true)
+        } catch {
+            FileLog.body.warn("couldn't write brain.token")
+            return
+        }
         let url = paths.supportDir.appendingPathComponent("brain.token")
-        FileManager.default.createFile(atPath: url.path, contents: Data(token.utf8), attributes: [.posixPermissions: 0o600])
+        let created = FileManager.default.createFile(atPath: url.path, contents: Data(token.utf8), attributes: [.posixPermissions: 0o600])
+        if !created { FileLog.body.warn("couldn't write brain.token") }
     }
 
     private func logHandle() -> FileHandle? {
