@@ -103,6 +103,10 @@ final class Perception {
                     // Redact before truncating: a secret straddling the 4000-char cutoff must still be caught.
                     let joined = boxes.map(\.text).joined(separator: "\n")
                     self.lastOCR = String(Redactor.redact(joined).prefix(Self.ocrMaxChars))
+                    // capture-diag: fires exactly when `changed` was true (new windowID or hash moved),
+                    // i.e. at most once per windowID+hash change. Counts only — never OCR text/titles/URLs.
+                    let charCount = boxes.reduce(0) { $0 + $1.text.count }
+                    FileLog.body.info("capture-diag ok bundleId=\(base.bundleId) windowID=\(window.id) image=\(image.width)x\(image.height) boxes=\(boxes.count) chars=\(charCount)")
                 }
                 var payload = base
                 payload.ocrText = self.lastOCR.isEmpty ? nil : self.lastOCR

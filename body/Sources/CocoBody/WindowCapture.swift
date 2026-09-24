@@ -27,7 +27,14 @@ enum WindowCapture {
     }
 
     static func capture(windowID: CGWindowID, maxDimension: CGFloat) async throws -> CGImage {
-        let window = try await scWindow(id: windowID)
+        let wasCached = await MainActor.run { cachedWindows[windowID] != nil }
+        let window: SCWindow
+        do {
+            window = try await scWindow(id: windowID)
+        } catch {
+            logDiagFailure(error, windowID: windowID, window: nil, fromCache: wasCached, config: nil, pointPixelScale: nil)
+            throw error
+        }
         let filter = SCContentFilter(desktopIndependentWindow: window)
         let scale = CGFloat(filter.pointPixelScale)
         let pixels = CGSize(width: window.frame.width * scale, height: window.frame.height * scale)
@@ -36,7 +43,12 @@ enum WindowCapture {
         config.width = max(1, Int(pixels.width * shrink))
         config.height = max(1, Int(pixels.height * shrink))
         config.showsCursor = false
-        return try await SCScreenshotManager.captureImage(contentFilter: filter, configuration: config)
+        do {
+            return try await SCScreenshotManager.captureImage(contentFilter: filter, configuration: config)
+        } catch {
+            logDiagFailure(error, windowID: windowID, window: window, fromCache: wasCached, config: config, pointPixelScale: filter.pointPixelScale)
+            throw error
+        }
     }
 
     private static func scWindow(id: CGWindowID) async throws -> SCWindow {
@@ -44,8 +56,31 @@ enum WindowCapture {
         let content = try await SCShareableContent.excludingDesktopWindows(true, onScreenWindowsOnly: true)
         let byId = Dictionary(content.windows.map { ($0.windowID, $0) }, uniquingKeysWith: { a, _ in a })
         await MainActor.run { cachedWindows = byId }
+        FileLog.body.info("capture-diag cache refreshed count=\(byId.count)")
         guard let window = byId[id] else { throw CaptureError.windowNotFound }
         return window
+    }
+
+    /// Diagnostic-only (Phase 1 evidence gathering): logs everything we know about a capture
+    /// failure so the stale-SCWindow-cache hypothesis (and alternatives) can be confirmed or
+    /// ruled out from body.log. Never changes control flow — the caller still gets the original error.
+    private static func logDiagFailure(_ error: Error, windowID: CGWindowID, window: SCWindow?, fromCache: Bool, config: SCStreamConfiguration?, pointPixelScale: Float?) {
+        let nsError = error as NSError
+        let bundleId = NSWorkspace.shared.frontmostApplication?.bundleIdentifier ?? "unknown"
+        let cgBounds = cgWindowListBounds(id: windowID).map { "\(Int($0.origin.x)),\(Int($0.origin.y)),\(Int($0.width))x\(Int($0.height))" } ?? "n/a"
+        let scFrame = window.map { "\(Int($0.frame.origin.x)),\(Int($0.frame.origin.y)),\(Int($0.frame.width))x\(Int($0.frame.height))" } ?? "n/a"
+        let isOnScreen = window.map { String($0.isOnScreen) } ?? "n/a"
+        let configDims = config.map { "\($0.width)x\($0.height)" } ?? "n/a"
+        let scale = pointPixelScale.map { String($0) } ?? "n/a"
+        FileLog.body.warn("capture-diag fail domain=\(nsError.domain) code=\(nsError.code) bundleId=\(bundleId) windowID=\(windowID) cgBounds=\(cgBounds) scFrame=\(scFrame) fromCache=\(fromCache) isOnScreen=\(isOnScreen) config=\(configDims) pointPixelScale=\(scale)")
+    }
+
+    /// Raw CGWindowList bounds for a specific window, independent of owning pid — used only for diagnostics.
+    private static func cgWindowListBounds(id: CGWindowID) -> CGRect? {
+        guard let list = CGWindowListCopyWindowInfo([.optionIncludingWindow], id) as? [[String: Any]],
+              let dict = list.first?[kCGWindowBounds as String] as? NSDictionary,
+              let bounds = CGRect(dictionaryRepresentation: dict) else { return nil }
+        return bounds
     }
 
     static func jpegBase64(_ image: CGImage, quality: CGFloat = 0.6) -> String? {
