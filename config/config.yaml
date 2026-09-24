@@ -15,5 +15,9 @@ look:
 user:
   name: Roshni
   handles: []           # Slack handles (without @) that count as mentions, e.g. [roshni]
+voice:
+  enabled: true          # master switch for Coco speaking aloud (TTS lives in the Swift body)
+  speakNudges: true       # speak unsolicited nudges/quips/questions
+  speakTypedReplies: false # speak replies to typed chat (voice-utterance replies always speak when enabled)
 debug:
   logContext: false     # never log screen text unless true

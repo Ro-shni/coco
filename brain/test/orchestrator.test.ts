@@ -65,7 +65,7 @@ describe('periodic nudges', () => {
     expect(input).toMatchObject({ userName: 'Roshni', activity: 'reading', trigger: null, incidentMode: false, allowQuip: true });
     expect(input.keyframe).toBeUndefined();
     expect(s.says()).toEqual([
-      { v: 1, type: 'say', nudgeId: 'n1', text: decision.text, kind: 'suggestion', chips: ['check deploys', 'shh'], speak: false, pointAt: '10:40' },
+      { v: 1, type: 'say', nudgeId: 'n1', text: decision.text, kind: 'suggestion', chips: ['check deploys', 'shh'], speak: true, pointAt: '10:40' },
     ]);
     expect(s.memory.nudgeOutcome('n1')).toBeNull();
   });
@@ -759,6 +759,85 @@ describe('draft & paste', () => {
     const requestId = pasteMsgs(s)[0]!.requestId;
     await s.o.handle({ v: 1, type: 'paste_result', requestId, ok: true });
     expect(s.says().at(-1)).toMatchObject({ text: "The paste didn't go through." });
+  });
+});
+
+describe('voice (SayMsg.speak)', () => {
+  const utter = (text: string, source: 'voice' | 'chat' = 'chat') => ({ v: 1 as const, type: 'utterance' as const, text, source });
+  const withVoice = (voice: Partial<typeof DEFAULT_CONFIG.voice>) =>
+    setup({ config: { ...DEFAULT_CONFIG, user: { name: 'Roshni', handles: ['roshni'] }, voice: { ...DEFAULT_CONFIG.voice, ...voice } } });
+
+  it('a reply to a voice utterance speaks when voice is enabled', async () => {
+    const s = withVoice({});
+    await s.o.handle(utter('what is this?', 'voice'));
+    expect(s.says().at(-1)).toMatchObject({ kind: 'reply', text: 'An answer.', speak: true });
+  });
+
+  it('a reply to typed chat does not speak by default, but does when speakTypedReplies is on', async () => {
+    const quiet = withVoice({});
+    await quiet.o.handle(utter('what is this?', 'chat'));
+    expect(quiet.says().at(-1)).toMatchObject({ kind: 'reply', speak: false });
+
+    const loud = withVoice({ speakTypedReplies: true });
+    await loud.o.handle(utter('what is this?', 'chat'));
+    expect(loud.says().at(-1)).toMatchObject({ kind: 'reply', speak: true });
+  });
+
+  it('an unsolicited nudge speaks when voice.enabled && voice.speakNudges', async () => {
+    const s = withVoice({});
+    await s.o.handle(runbook);
+    await s.o.tick();
+    expect(s.says().at(-1)).toMatchObject({ speak: true });
+
+    const noNudges = withVoice({ speakNudges: false });
+    await noNudges.o.handle(runbook);
+    await noNudges.o.tick();
+    expect(noNudges.says().at(-1)).toMatchObject({ speak: false });
+  });
+
+  it('voice.enabled=false silences everything: nudges, voice replies, and voice focus confirmations', async () => {
+    const s = withVoice({ enabled: false });
+    await s.o.handle(runbook);
+    await s.o.tick();
+    expect(s.says().at(-1)).toMatchObject({ speak: false });
+
+    await s.o.handle(utter('what is this?', 'voice'));
+    expect(s.says().at(-1)).toMatchObject({ speak: false });
+
+    await s.o.handle(utter('go to slack', 'voice'));
+    await s.o.handle({ v: 1, type: 'focus_result', requestId: s.sent.filter((m) => m.type === 'focus').at(-1)!.requestId, ok: true, matched: 'Slack' });
+    expect(s.says().at(-1)).toMatchObject({ text: 'Switched to Slack.', speak: false });
+  });
+
+  it('a focus command confirmation speaks only when the command itself came by voice', async () => {
+    const s = withVoice({});
+    await s.o.handle(utter('go to slack', 'voice'));
+    await s.o.handle({ v: 1, type: 'focus_result', requestId: 'n1', ok: true, matched: 'Slack' });
+    expect(s.says().at(-1)).toMatchObject({ text: 'Switched to Slack.', speak: true });
+
+    const typed = withVoice({});
+    await typed.o.handle(utter('go to slack', 'chat'));
+    await typed.o.handle({ v: 1, type: 'focus_result', requestId: 'n1', ok: true, matched: 'Slack' });
+    expect(typed.says().at(-1)).toMatchObject({ text: 'Switched to Slack.', speak: false });
+  });
+
+  it('status says (e.g. brain offline) never speak, even with voice enabled', async () => {
+    const s = withVoice({});
+    s.decide.mockRejectedValueOnce(new ModelUnavailableError('down'));
+    await s.o.handle(runbook);
+    await s.o.tick();
+    expect(s.says().at(-1)).toMatchObject({ kind: 'status', text: "Brain offline: Ollama isn't answering. I'll keep checking.", speak: false });
+  });
+
+  it('a draft reply speaks only via the say\'s text field, which never contains the draft body', async () => {
+    const draftReply = { text: 'Here you go.', draft: "I'll check the pulse mcp setup tomorrow morning." };
+    const s = withVoice({});
+    s.reply.mockResolvedValue(draftReply);
+    await s.o.handle(ctx({ app: 'Arc', bundleId: 'company.thebrowser.Browser', private: false }));
+    await s.o.handle(utter('draft a reply to Prince', 'voice'));
+    const said = s.says().at(-1)!;
+    expect(said).toMatchObject({ text: draftReply.text, draft: draftReply.draft, speak: true });
+    expect(said.text).not.toContain(draftReply.draft);
   });
 });
 

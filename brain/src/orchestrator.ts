@@ -44,10 +44,14 @@ interface PendingTrigger {
   at: number;
 }
 
+/** Where the in-flight utterance/command came from: the Swift body's on-device STT ('voice') or typed chat ('chat'). */
+type Source = 'voice' | 'chat';
+
 interface PendingFocus {
   requestId: string;
   target: string;
   kind: Command['kind'];
+  source: Source;
   at: number;
 }
 
@@ -68,6 +72,7 @@ interface PendingDraft {
 interface PendingPaste {
   requestId: string;
   app: string;
+  source: Source;
   at: number;
 }
 
@@ -145,7 +150,7 @@ export class Orchestrator {
       case 'keyframe':
         return this.onKeyframe(msg);
       case 'utterance':
-        return this.onUtterance(msg.text);
+        return this.onUtterance(msg.text, msg.source);
       case 'chip':
         return this.onChip(msg.nudgeId, msg.choice);
       case 'focus_result':
@@ -238,12 +243,12 @@ export class Orchestrator {
     await this.maybeNudge(null, PRIORITY.tick);
   }
 
-  private async onUtterance(text: string): Promise<void> {
+  private async onUtterance(text: string, source: Source): Promise<void> {
     const now = this.d.clock();
     this.resolveAll('engaged');
     const offer = this.takeOffer(now);
-    if (offer && isAffirmation(text)) return this.startFocus({ type: 'focus', target: offer.target, kind: offer.kind }, text, now);
-    if (PASTE_UTTERANCE.test(text.trim())) return this.triggerPaste(now);
+    if (offer && isAffirmation(text)) return this.startFocus({ type: 'focus', target: offer.target, kind: offer.kind }, text, now, source);
+    if (PASTE_UTTERANCE.test(text.trim())) return this.triggerPaste(now, source);
     const command = text.trim().toLowerCase();
     if (command === SHH) return this.mute(now + MUTE_MS, TEXT.muted30);
     if (command === SHH_TODAY) return this.mute(nextLocalMidnight(now), TEXT.mutedToday);
@@ -254,8 +259,8 @@ export class Orchestrator {
       return;
     }
     const cmd = parseCommand(text);
-    if (cmd) return this.startFocus(cmd, text, now);
-    await this.answer(text);
+    if (cmd) return this.startFocus(cmd, text, now, source);
+    await this.answer(text, source);
   }
 
   /** Returns the live pending offer (if any) and clears it: any user message consumes or cancels the offer. */
@@ -271,9 +276,9 @@ export class Orchestrator {
     this.pendingOffer = target ? { target, kind: 'app', at: this.d.clock() } : undefined;
   }
 
-  private startFocus(cmd: Command, text: string, now: number): void {
+  private startFocus(cmd: Command, text: string, now: number, source: Source): void {
     const requestId = this.d.newId();
-    this.pendingFocus = { requestId, target: cmd.target, kind: cmd.kind, at: now };
+    this.pendingFocus = { requestId, target: cmd.target, kind: cmd.kind, source, at: now };
     this.d.send({ v: 1, type: 'focus', requestId, target: cmd.target, kind: cmd.kind });
     this.d.memory.addTurn('user', text, now);
   }
@@ -289,12 +294,12 @@ export class Orchestrator {
     if (command === DISMISS) return this.resolve(id, 'ignored');
     if (command.startsWith('paste into') && this.lastDraft?.id === id) {
       this.resolve(id, 'engaged');
-      this.triggerPaste(now);
+      this.triggerPaste(now, 'chat');
       return;
     }
     this.resolve(id, 'engaged');
     const original = this.recentTexts.get(id);
-    await this.answer(original ? `I clicked "${choice}" on what you said: "${original}"` : choice);
+    await this.answer(original ? `I clicked "${choice}" on what you said: "${original}"` : choice, 'chat');
   }
 
   // ---- nudging ------------------------------------------------------------
@@ -366,7 +371,7 @@ export class Orchestrator {
       text: decision.text,
       kind: decision.kind,
       chips: withShh(decision.chips),
-      speak: false,
+      speak: this.d.config.voice.enabled && this.d.config.voice.speakNudges,
       ...(decision.pointAt ? { pointAt: decision.pointAt } : {}),
     });
     this.rememberOffer(decision.text);
@@ -387,7 +392,7 @@ export class Orchestrator {
     const text = msg.ok
       ? `Switched to ${msg.matched ?? p.target}.`
       : `I can't find ${p.kind === 'window' ? 'a window' : 'an app'} called "${p.target}".`;
-    this.say(text, 'reply');
+    this.say(text, 'reply', { speak: this.speakForCommandConfirmation(p.source) });
     this.d.memory.addTurn('assistant', text, now);
   }
 
@@ -395,7 +400,7 @@ export class Orchestrator {
     const p = this.pendingFocus;
     if (!p || now - p.at < FOCUS_TIMEOUT_MS) return;
     this.pendingFocus = undefined;
-    this.say("That switch didn't go through.", 'reply');
+    this.say("That switch didn't go through.", 'reply', { speak: this.speakForCommandConfirmation(p.source) });
   }
 
   private clearStalePendingTrigger(now: number): void {
@@ -442,7 +447,7 @@ export class Orchestrator {
 
   // ---- chat -------------------------------------------------------------------
 
-  private async answer(text: string): Promise<void> {
+  private async answer(text: string, source: Source): Promise<void> {
     const cur = this.d.timeline.current();
     this.d.log.info('chat_ctx', {
       hasCurrent: cur !== undefined,
@@ -459,7 +464,7 @@ export class Orchestrator {
         incidentMode: isIncident(cur?.msg),
       });
       this.announceRecoveryIfNeeded();
-      this.deliverChatReply(reply, cur?.msg);
+      this.deliverChatReply(reply, cur?.msg, source);
       this.rememberOffer(reply.text);
     } catch (err) {
       const wasOnline = this.online;
@@ -469,32 +474,33 @@ export class Orchestrator {
     }
   }
 
-  /** Sends the chat reply as a say; when it carries a draft and the current context is a known, non-private app, attaches draftApp/the paste chip and remembers it as lastDraft. */
-  private deliverChatReply(reply: ExtractedDraft, current: ContextMsg | undefined): void {
+  /** Sends the chat reply as a say; when it carries a draft and the current context is a known, non-private app, attaches draftApp/the paste chip and remembers it as lastDraft. Speaks only `text`, never `draft` — the Body speaks the say's `text` field, which extractDraft has already stripped of any draft content. */
+  private deliverChatReply(reply: ExtractedDraft, current: ContextMsg | undefined, source: Source): void {
+    const speak = this.speakForReply(source);
     if (!reply.draft) {
       this.lastDraft = undefined;
-      this.say(reply.text, 'reply');
+      this.say(reply.text, 'reply', { speak });
       return;
     }
     const app = current && !current.private ? current.app : undefined;
     if (!app) {
       this.lastDraft = undefined;
-      this.say(reply.text, 'reply', { draft: reply.draft });
+      this.say(reply.text, 'reply', { draft: reply.draft, speak });
       return;
     }
-    const id = this.say(reply.text, 'reply', { draft: reply.draft, draftApp: app, chips: [`paste into ${app}`] });
+    const id = this.say(reply.text, 'reply', { draft: reply.draft, draftApp: app, chips: [`paste into ${app}`], speak });
     this.lastDraft = { id, text: reply.draft, app, at: this.d.clock() };
   }
 
   /** Pastes the current draft, or explains there isn't one (missing or stale). The ONLY entry point for the paste flow. */
-  private triggerPaste(now: number): void {
+  private triggerPaste(now: number, source: Source): void {
     const draft = this.lastDraft;
     if (!draft || now - draft.at >= DRAFT_TTL_MS) {
       this.say("There's no draft to paste yet.", 'reply');
       return;
     }
     const requestId = this.d.newId();
-    this.pendingPaste = { requestId, app: draft.app, at: now };
+    this.pendingPaste = { requestId, app: draft.app, source, at: now };
     this.d.send({ v: 1, type: 'paste', requestId, text: draft.text, app: draft.app });
   }
 
@@ -505,14 +511,14 @@ export class Orchestrator {
     const text = msg.ok
       ? `Pasted into ${p.app} — press Enter to send.`
       : `Couldn't paste into ${p.app}: ${msg.detail ?? 'no text box found'}.`;
-    this.say(text, 'reply');
+    this.say(text, 'reply', { speak: this.speakForCommandConfirmation(p.source) });
   }
 
   private expirePendingPaste(now: number): void {
     const p = this.pendingPaste;
     if (!p || now - p.at < PASTE_TIMEOUT_MS) return;
     this.pendingPaste = undefined;
-    this.say("The paste didn't go through.", 'reply');
+    this.say("The paste didn't go through.", 'reply', { speak: this.speakForCommandConfirmation(p.source) });
   }
 
   // ---- health & mood ----------------------------------------------------------
@@ -583,11 +589,21 @@ export class Orchestrator {
     this.d.send({ v: 1, type: 'mood', mood });
   }
 
+  /** Reply to an utterance: voice always speaks (when voice is enabled); typed chat speaks only when speakTypedReplies is on. */
+  private speakForReply(source: Source): boolean {
+    return source === 'voice' ? this.d.config.voice.enabled : this.d.config.voice.enabled && this.d.config.voice.speakTypedReplies;
+  }
+
+  /** Confirmation of a focus/paste command: speaks only when that command itself arrived by voice. */
+  private speakForCommandConfirmation(source: Source): boolean {
+    return source === 'voice' && this.d.config.voice.enabled;
+  }
+
   /** Sends a status/reply say. Returns the nudgeId, so callers can correlate a later "paste into <App>" chip with the draft it belongs to. */
   private say(
     text: string,
     kind: Extract<SayKind, 'status' | 'reply'>,
-    extra?: { chips?: readonly string[]; draft?: string; draftApp?: string },
+    extra?: { chips?: readonly string[]; draft?: string; draftApp?: string; speak?: boolean },
   ): string {
     const id = this.d.newId();
     this.d.send({
@@ -597,7 +613,7 @@ export class Orchestrator {
       text,
       kind,
       chips: extra?.chips ? [...extra.chips] : [],
-      speak: false,
+      speak: extra?.speak ?? false,
       ...(extra?.draft ? { draft: extra.draft } : {}),
       ...(extra?.draftApp ? { draftApp: extra.draftApp } : {}),
     });

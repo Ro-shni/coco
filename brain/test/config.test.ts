@@ -38,6 +38,18 @@ describe('loadConfig', () => {
     writeFileSync(join(dir, 'config.yaml'), 'nudge:\n  tickMinSec: 30\n  tickMaxSec: 20\n');
     expect(() => loadConfig(dir)).toThrow(/tickMaxSec/);
   });
+
+  it('defaults voice to enabled, speakNudges on, speakTypedReplies off', () => {
+    expect(loadConfig(tmp()).voice).toEqual({ enabled: true, speakNudges: true, speakTypedReplies: false });
+  });
+
+  it('deep-merges a partial voice override from config.yaml', () => {
+    const dir = tmp();
+    writeFileSync(join(dir, 'config.yaml'), 'voice:\n  enabled: false\n  speakTypedReplies: true\n');
+    const cfg = loadConfig(dir);
+    expect(cfg.voice).toEqual({ enabled: false, speakNudges: true, speakTypedReplies: true });
+    expect(DEFAULT_CONFIG.voice).toEqual({ enabled: true, speakNudges: true, speakTypedReplies: false });
+  });
 });
 
 describe('PersonaFile', () => {

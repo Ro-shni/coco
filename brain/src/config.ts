@@ -15,6 +15,7 @@ const ConfigSchema = z
     }),
     look: z.object({ dwellSec: z.number().min(1), maxPerMinute: z.number().int().min(0).max(10) }),
     user: z.object({ name: z.string(), handles: z.array(z.string()) }),
+    voice: z.object({ enabled: z.boolean(), speakNudges: z.boolean(), speakTypedReplies: z.boolean() }),
     debug: z.object({ logContext: z.boolean() }),
   })
   .refine((c) => c.nudge.tickMaxSec >= c.nudge.tickMinSec, {
@@ -30,6 +31,7 @@ export const DEFAULT_CONFIG: CocoConfig = Object.freeze({
   nudge: { minGapSec: 180, tickMinSec: 20, tickMaxSec: 30, ignoreAfterSec: 20 },
   look: { dwellSec: 5, maxPerMinute: 3 },
   user: { name: '', handles: [] },
+  voice: { enabled: true, speakNudges: true, speakTypedReplies: false },
   debug: { logContext: false },
 }) as CocoConfig;
 
