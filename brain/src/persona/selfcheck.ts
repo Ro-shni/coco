@@ -20,9 +20,12 @@ const LEAD = `(?:${ADVERB}[,!]?\\s+)*`;
 /** Things Coco might claim to have sent: "it", "that", "all", "your message", "the reply"... */
 const SUBJECT = "(?:it|that|this|all|everything|(?:the|your|my)?\\s*(?:message|reply|approval|draft|response|dm|email|note|pr|comment|update)s?)";
 const AUX = "(?:'s been|'s|\\s+(?:is|was|are|were|got|has been|have been))";
-/** What may follow a bare participle: clause end (or trailing punctuation/emoji), or an object, recipient or particle. */
-const BARE_FOLLOW =
-  "(?=\\s*(?:$|[^\\w\\s])|\\s+(?:it|that|them|this|the (?:message|reply|draft|approval|note|dm)|to\\s+\\S+|over|off|through|across)\\b)";
+/** Verbs whose "to X" names a recipient ("Sent to Prince"); for the rest "to X" is a place ("Deployed to prd"). */
+const SEND_VERB = "sent|posted|replied|messaged|emailed|dm'?e?d|forwarded|shared|pinged|notified|delivered";
+/** What may follow a bare participle: clause end (or trailing punctuation/emoji), or an object or particle. */
+const OBJECT_FOLLOW = "\\s*(?:$|[^\\w\\s])|\\s+(?:it|that|them|this|the (?:message|reply|draft|approval|note|dm)|over|off|through|across)\\b";
+const SEND_FOLLOW = `(?=${OBJECT_FOLLOW}|\\s+to\\s+\\S)`;
+const BARE_FOLLOW = `(?=${OBJECT_FOLLOW})`;
 const CLAIM_FORMS: readonly { form: RegExp; inQuestions: boolean }[] = [
   // (a) first person: "I sent", "I've just replied", "We've pinged"
   { form: new RegExp(`\\b(?:i|we)(?:'ve|'d| have| had)?\\s+(?:${ADVERB}\\s+)*(?:${COMPLETION_VERB})\\b`, 'i'), inQuestions: true },
@@ -31,6 +34,8 @@ const CLAIM_FORMS: readonly { form: RegExp; inQuestions: boolean }[] = [
   // (c)/(d) bare or elliptical completion at clause start: "Sent to Prince", "Just sent it over", "Done, posted it", "Approved ✅"
   // Only when the participle ends the clause or takes an object/recipient/particle, so factual
   // nudges ("Deployed at 10:38", "Merged 20 minutes ago", "Approved by Prince") are not claims.
+  // "to X" counts as a recipient only for send-family verbs: "Sent to Prince" yes, "Deployed to prd at 10:38" no.
+  { form: new RegExp(`^${LEAD}(?:${SEND_VERB})${SEND_FOLLOW}`, 'i'), inQuestions: false },
   { form: new RegExp(`^${LEAD}(?:${COMPLETION_VERB})${BARE_FOLLOW}`, 'i'), inQuestions: false },
   // (e) a clause that is just "Done"
   { form: /^done[!.]*$/i, inQuestions: false },

@@ -158,5 +158,20 @@ describe('claimsUnperformedAction', () => {
   ])('still flags a bare completion with an object, recipient or clause end: %s', (text) => {
     expect(claimsUnperformedAction(text)).not.toBeNull();
   });
+
+  it.each(['Deployed to prd at 10:38.', 'Merged to main 20 minutes ago.', 'Scheduled to run at 21:12.'])(
+    'does not treat "to <env>" after a deploy/merge-family verb as a recipient: %s',
+    (text) => {
+      expect(claimsUnperformedAction(text)).toBeNull();
+      expect(checkReply({ ...base, text }).ok).toBe(true);
+    },
+  );
+
+  it.each(['Sent to Prince.', 'Posted to #devops-oncall.', 'Forwarded to Prince.', 'Deployed it.', 'Merged.'])(
+    'still flags send-family "to <recipient>" and deploy/merge with an object or clause end: %s',
+    (text) => {
+      expect(claimsUnperformedAction(text)).not.toBeNull();
+    },
+  );
 });
 
