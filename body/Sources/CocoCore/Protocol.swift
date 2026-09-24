@@ -88,6 +88,26 @@ public struct MoodPayload: Codable, Equatable, Sendable {
     public init(mood: Mood) { self.mood = mood }
 }
 
+public enum FocusKind: String, Codable, Sendable { case app, window }
+
+public struct FocusPayload: Codable, Equatable, Sendable {
+    public var requestId: String
+    public var target: String
+    public var kind: FocusKind
+    public init(requestId: String, target: String, kind: FocusKind) {
+        self.requestId = requestId; self.target = target; self.kind = kind
+    }
+}
+
+public struct FocusResultPayload: Codable, Equatable, Sendable {
+    public var requestId: String
+    public var ok: Bool
+    public var matched: String?
+    public init(requestId: String, ok: Bool, matched: String? = nil) {
+        self.requestId = requestId; self.ok = ok; self.matched = matched
+    }
+}
+
 private enum EnvelopeKeys: String, CodingKey { case v, type }
 
 private func decodeEnvelope(_ decoder: Decoder) throws -> (KeyedDecodingContainer<EnvelopeKeys>, String) {
@@ -111,6 +131,7 @@ public enum BodyToBrain: Codable, Equatable, Sendable {
     case keyframe(KeyframePayload)
     case utterance(UtterancePayload)
     case chip(ChipPayload)
+    case focusResult(FocusResultPayload)
 
     public init(from decoder: Decoder) throws {
         let (c, type) = try decodeEnvelope(decoder)
@@ -120,6 +141,7 @@ public enum BodyToBrain: Codable, Equatable, Sendable {
         case "keyframe": self = .keyframe(try KeyframePayload(from: decoder))
         case "utterance": self = .utterance(try UtterancePayload(from: decoder))
         case "chip": self = .chip(try ChipPayload(from: decoder))
+        case "focus_result": self = .focusResult(try FocusResultPayload(from: decoder))
         default: throw DecodingError.dataCorruptedError(forKey: .type, in: c, debugDescription: "unknown type \(type)")
         }
     }
@@ -131,6 +153,7 @@ public enum BodyToBrain: Codable, Equatable, Sendable {
         case .keyframe(let p): try encodeEnvelope(encoder, type: "keyframe"); try p.encode(to: encoder)
         case .utterance(let p): try encodeEnvelope(encoder, type: "utterance"); try p.encode(to: encoder)
         case .chip(let p): try encodeEnvelope(encoder, type: "chip"); try p.encode(to: encoder)
+        case .focusResult(let p): try encodeEnvelope(encoder, type: "focus_result"); try p.encode(to: encoder)
         }
     }
 }
@@ -139,6 +162,7 @@ public enum BrainToBody: Codable, Equatable, Sendable {
     case say(SayPayload)
     case requestKeyframe(RequestKeyframePayload)
     case mood(MoodPayload)
+    case focus(FocusPayload)
 
     public init(from decoder: Decoder) throws {
         let (c, type) = try decodeEnvelope(decoder)
@@ -146,6 +170,7 @@ public enum BrainToBody: Codable, Equatable, Sendable {
         case "say": self = .say(try SayPayload(from: decoder))
         case "request_keyframe": self = .requestKeyframe(try RequestKeyframePayload(from: decoder))
         case "mood": self = .mood(try MoodPayload(from: decoder))
+        case "focus": self = .focus(try FocusPayload(from: decoder))
         default: throw DecodingError.dataCorruptedError(forKey: .type, in: c, debugDescription: "unknown type \(type)")
         }
     }
@@ -155,6 +180,7 @@ public enum BrainToBody: Codable, Equatable, Sendable {
         case .say(let p): try encodeEnvelope(encoder, type: "say"); try p.encode(to: encoder)
         case .requestKeyframe(let p): try encodeEnvelope(encoder, type: "request_keyframe"); try p.encode(to: encoder)
         case .mood(let p): try encodeEnvelope(encoder, type: "mood"); try p.encode(to: encoder)
+        case .focus(let p): try encodeEnvelope(encoder, type: "focus"); try p.encode(to: encoder)
         }
     }
 }

@@ -23,7 +23,7 @@ private func jsonObject(_ data: Data) throws -> NSDictionary {
 @Suite struct ProtocolContractTests {
     @Test func bodyFixturesRoundTrip() throws {
         let all = try fixtures("body")
-        #expect(all.count == 6)
+        #expect(all.count == 7)
         for (name, data) in all {
             let msg = try JSONDecoder().decode(BodyToBrain.self, from: data)
             let back = try JSONEncoder().encode(msg)
@@ -33,7 +33,7 @@ private func jsonObject(_ data: Data) throws -> NSDictionary {
 
     @Test func brainFixturesRoundTrip() throws {
         let all = try fixtures("brain")
-        #expect(all.count == 4)
+        #expect(all.count == 5)
         for (name, data) in all {
             let msg = try JSONDecoder().decode(BrainToBody.self, from: data)
             let back = try JSONEncoder().encode(msg)

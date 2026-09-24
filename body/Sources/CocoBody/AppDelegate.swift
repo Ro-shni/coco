@@ -80,6 +80,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             perception.captureKeyframe()
         case .mood(let payload):
             overlay.setMood(payload.mood)
+        case .focus(let f):
+            let matched = WindowFocus.focus(target: f.target, kind: f.kind)
+            brain.send(.focusResult(FocusResultPayload(requestId: f.requestId, ok: matched != nil, matched: matched)))
         }
     }
 
