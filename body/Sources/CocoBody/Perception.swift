@@ -27,17 +27,23 @@ final class Perception {
         timer = Timer.scheduledTimer(withTimeInterval: 1, repeats: true) { [weak self] _ in self?.step() }
     }
 
+    /// Main thread only.
     func anchorRect(for text: String) -> CGRect? {
+        dispatchPrecondition(condition: .onQueue(.main))
         guard let box = AnchorMatcher.bestMatch(for: text, in: lastBoxes),
               let primary = NSScreen.screens.first else { return nil }
         return ScreenGeometry.appKitRect(normalized: box.rect, windowBounds: lastWindowBounds, primaryScreenHeight: primary.frame.height)
     }
 
     func captureKeyframe() {
-        guard !paused, let snap = AXReader.snapshot(), !isPrivate(snap), let window = WindowCapture.frontWindow(pid: snap.pid) else { return }
+        guard !paused, let snap = AXReader.snapshot(), snap.bundleId != Bundle.main.bundleIdentifier, !isPrivate(snap),
+              let window = WindowCapture.frontWindow(pid: snap.pid) else { return }
         Task {
             guard let image = try? await WindowCapture.capture(windowID: window.id, maxDimension: Self.keyframeMaxDimension),
-                  let jpeg = WindowCapture.jpegBase64(image) else { return }
+                  let jpeg = WindowCapture.jpegBase64(image) else {
+                FileLog.body.warn("keyframe capture failed")
+                return
+            }
             let payload = KeyframePayload(jpegBase64: jpeg, width: image.width, height: image.height, ts: nowMs())
             await MainActor.run { self.onKeyframe?(payload) }
         }
