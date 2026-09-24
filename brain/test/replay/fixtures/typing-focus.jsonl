@@ -1,0 +1,3 @@
+{"at":0,"msg":{"v":1,"type":"context","app":"Code","bundleId":"com.microsoft.VSCode","windowTitle":"orchestrator.ts — coco","ocrText":"export class Orchestrator { private activity: ActivityState = 'reading'; private keyframe: { key: string; jpeg: string; ts: number } | undefined; private pending: readonly PendingNudge[] = []; constructor(private readonly d: OrchestratorDeps) {} }","private":false,"ts":0}}
+{"at":0,"msg":{"v":1,"type":"activity","state":"typing","ts":0}}
+{"at":600,"msg":{"v":1,"type":"activity","state":"typing","ts":0}}
