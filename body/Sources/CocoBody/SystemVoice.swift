@@ -26,9 +26,14 @@ final class SystemVoiceSpeaker: NSObject {
         process.standardInput = stdin
         // Foundation reaps the process and calls this once it exits, whether that's naturally, via
         // SIGTERM from stop(), or via the SIGKILL escalation below — no waitUntilExit/zombie risk.
-        process.terminationHandler = { [weak self] _ in
-            self?.sayProcess = nil
-            self?.report(false)
+        // Only the current process may clear itself: an older say process that
+        // exits after a rapid re-speak must not orphan the newer one.
+        process.terminationHandler = { [weak self] finished in
+            DispatchQueue.main.async {
+                guard let self, self.sayProcess === finished else { return }
+                self.sayProcess = nil
+                self.report(false)
+            }
         }
         do {
             try process.run()
