@@ -18,6 +18,9 @@ final class OverlayController {
     private var homeSpec: HomeSpec
     private var dragTracker = DragTracker()
     private var isDragging = false
+    /// Whether the current gesture has already crossed the drag threshold — guards the
+    /// bubble-hide/presence-dismiss so they fire once per gesture, not on every pixel of movement.
+    private var didStartDrag = false
     /// Panel holding the 64 pt character plus its glow margin.
     private static let characterSize = CGSize(width: CharacterView.characterPoints + 2 * CharacterView.margin,
                                               height: CharacterView.characterPoints + 2 * CharacterView.margin)
@@ -141,17 +144,24 @@ final class OverlayController {
 
     private func dragBegan() {
         isDragging = true
+        didStartDrag = false
         dragTracker.begin(at: NSEvent.mouseLocation)
     }
 
     private func dragChanged() {
         let delta = dragTracker.move(to: NSEvent.mouseLocation)
         guard dragTracker.isDrag else { return }
-        if bubblePanel.isVisible { bubblePanel.orderOut(nil) }
-        presence.dismiss()
+        if !didStartDrag {
+            didStartDrag = true
+            if bubblePanel.isVisible { bubblePanel.orderOut(nil) }
+            presence.dismiss()
+        }
         var frame = characterPanel.frame
         frame.origin.x += delta.width
         frame.origin.y += delta.height
+        if let visible = screenUnderCursor()?.visibleFrame {
+            frame.origin = ScreenGeometry.clampOrigin(frame.origin, size: frame.size, in: visible)
+        }
         characterPanel.setFrame(frame, display: true)
         atHome = false
     }
@@ -165,7 +175,9 @@ final class OverlayController {
         }
     }
 
-    /// Saves wherever the panel currently sits as the new home, as a fraction of the display its centre is on.
+    /// Saves wherever the panel currently sits as the new home, as a fraction of the display its centre is
+    /// on, then snaps the live panel to that same clamped position so the visible spot always matches what
+    /// was persisted.
     private func saveHomeFromCurrentPosition() {
         let center = CGPoint(x: characterPanel.frame.midX, y: characterPanel.frame.midY)
         guard let screen = NSScreen.screens.first(where: { $0.frame.contains(center) }) ?? screenUnderCursor() else { return }
@@ -174,6 +186,8 @@ final class OverlayController {
                                              visibleFrame: screen.visibleFrame, displayID: displayID)
         homeSpec = spec
         UserDefaults.standard.set(HomePlacement.encode(spec), forKey: Self.homeDefaultsKey)
+        let snapped = HomePlacement.origin(for: spec, visibleFrame: screen.visibleFrame, size: characterPanel.frame.size)
+        move(characterPanel, to: snapped, animated: true)
         atHome = true
     }
 
