@@ -52,6 +52,8 @@ final class SystemVoiceSpeaker: NSObject {
     func stop() {
         guard let process = sayProcess else { return }
         sayProcess = nil
+        // The terminationHandler ignores processes that are no longer current, so signal the end here.
+        report(false)
         guard process.isRunning else { return }
         process.terminate()
         DispatchQueue.main.asyncAfter(deadline: .now() + Self.killEscalationDelay) {
