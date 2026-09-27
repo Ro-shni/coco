@@ -67,24 +67,40 @@ export function claimsUnperformedAction(text: string): string | null {
   return null;
 }
 
-/** Progressive ("in-flight") verbs Coco might use while an action block is still pending confirmation from
- * the body — "Opening YouTube for you now.", "Pulling that up.". These are not completion claims (the
- * verb is progressive, not past-tense), so `claimsUnperformedAction` never flags them — but they still say
- * something is happening when, if the action was dropped, nothing is. */
-const PENDING_ACTION =
-  /\b(?:opening|launching|searching|starting|playing)\b(?:\s+\S+){0,4}\s+(?:for you|now|up)\b|\b(?:pulling|bringing)\s+(?:it|that|this)\s+up\b/i;
+/** Progressive ("in-flight") verbs and stock hand-off lines Coco might use while an action block is still
+ * pending confirmation from the body, or waiting on a confirm chip — "Opening YouTube for you now.",
+ * "Pulling that up.", "Opening it.", "Launching Arc.", "Let me open that.", "Here you go.". None of these
+ * are completion claims (progressive/hand-off phrasing, not past-tense), so `claimsUnperformedAction` never
+ * flags them — but they still say something is happening (or ready) when, if the action was dropped,
+ * nothing is. */
+const PENDING_ACTION_FORMS: readonly RegExp[] = [
+  // "Opening YouTube for you now.", "Launching Arc for you now.", "Searching for that up now."
+  /\b(?:opening|launching|searching|starting|playing)\b(?:\s+\S+){0,4}\s+(?:for you|now|up)\b/i,
+  // "Pulling that up.", "Bringing it up."
+  /\b(?:pulling|bringing)\s+(?:it|that|this)\s+up\b/i,
+  // bare "Opening it.", "Launching Arc.", "Opening that." — the verb at (near enough) clause start, with
+  // any single object/name and nothing else after it.
+  /^(?:opening|launching)\s+\S+[.!]?$/i,
+  // "Let me open that.", "Let me pull that up.", "Let me bring that up."
+  /\blet me (?:open|launch)\b|\blet me (?:pull|bring)\s+(?:it|that|this)\s+up\b/i,
+  // Coco's stock hand-off lines — only ever checked here once we already know a proposed action was
+  // dropped, so in that context these mean "the (nonexistent) result is ready".
+  /^here (?:it is|you go)\b/i,
+];
 
 /**
- * True when text implies an open/launch is in progress right now. Used only when a model action was
- * present in the reply but did not survive (gate rejection or schema mismatch) — in that case, a leftover
- * "Opening…"/"Pulling that up" line would be an honesty failure (nothing is actually opening), even though
- * it is not a *completion* claim `claimsUnperformedAction` would catch.
+ * True when text implies an open/launch is in progress or ready right now. Used only when a model action
+ * was present in the reply but did not survive (gate rejection or schema mismatch), or while a confirm chip
+ * is still awaited — in that case, a leftover "Opening…"/"Here you go" line would be an honesty failure
+ * (nothing is actually open/ready), even though it is not a *completion* claim `claimsUnperformedAction`
+ * would catch.
  */
 export function claimsPendingAction(text: string): boolean {
   const clean = text.replace(/[‘’]/g, "'").replace(DRAFTS, ' ');
   return clean
     .split(/(?<=[.!?])\s+|\n+/)
-    .some((sentence) => PENDING_ACTION.test(sentence) && !NEGATION.test(sentence.slice(0, sentence.search(PENDING_ACTION) + 1)));
+    .map((s) => s.trim())
+    .some((sentence) => PENDING_ACTION_FORMS.some((form) => form.test(sentence)) && !NEGATION.test(sentence));
 }
 
 export interface CheckInput {

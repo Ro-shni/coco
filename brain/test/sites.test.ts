@@ -75,7 +75,29 @@ describe('isKnownSiteResult', () => {
     'https://evil.example.com/login',
     'https://github.com/Ro-shni/Coco',
     'https://example.com',
+    'not a url at all',
   ])('is false for anything else, even on a known host: %s', (url) => {
     expect(isKnownSiteResult(url)).toBe(false);
+  });
+
+  // N2: a plain startsWith(prefix) let anything ride along after the query param — closing that.
+  it.each([
+    ['https://www.google.com/search?q=evil&btnI=1', "extra param (Google's I'm Feeling Lucky redirect)"],
+    ['https://www.google.com/search?q=evil&foo=bar', 'a different extra param'],
+    ['https://github.com/search?q=x&type=code', 'an extra github search param'],
+    ['https://www.youtube.com/results?search_query=x&list=PL123', 'an extra youtube playlist param'],
+    ['https://www.youtube.com#foo', 'a fragment on the homepage'],
+    ['https://www.youtube.com/results?search_query=x#foo', 'a fragment on a search result'],
+    ['https://youtube.com@evil.com/results?search_query=x', 'userinfo trick — the real host is evil.com'],
+    ['https://www.youtube.com:8443', 'a different port than the known origin'],
+    ['https://www.google.com/search', 'no query param at all on a search path'],
+    ['https://www.google.com/search?x=1', 'the wrong query param name'],
+  ])('N2: is false for %s (%s)', (url) => {
+    expect(isKnownSiteResult(url)).toBe(false);
+  });
+
+  it('N2: is still true for a search result with exactly the template query param and nothing else', () => {
+    expect(isKnownSiteResult('https://www.google.com/search?q=dynamic+programming')).toBe(true);
+    expect(isKnownSiteResult('https://www.youtube.com/')).toBe(true); // trailing slash homepage
   });
 });

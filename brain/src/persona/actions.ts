@@ -73,13 +73,26 @@ export function extractAction(reply: string): ExtractedAction {
  * a user utterance or, without an intent, a chip-derived reply).
  *
  * An action verb merely appearing somewhere in the sentence is not enough (that was the injection-prone
- * version of this gate): it must be imperative — at the very start of a clause, or immediately after an
- * allowed lead-in ("can/could/would you (please)", "please", "I want you to") — and the clause must not be
- * a wh-question ("what does this show?", "where do I start?"), even when it mentions a verb from the list.
+ * version of this gate): it must be imperative — at the very start of a clause (after stripping a leading
+ * filler like "hey"/"okay so"/"so" and a "Coco," address), or immediately after an allowed lead-in
+ * ("can/could/would you (mind) (please)", "please,", "I want/need you to") — and the clause must not be a
+ * wh-question ("what does this show?", "where do I start?"), even when it mentions a verb from the list.
  */
+const FILLER_PREFIX = /^(?:hey|ok(?:ay)?|so|um|uh)[,]?\s+/i;
 const ADDRESS_PREFIX = /^(?:hey\s+)?coco[,:]?\s*/i;
-const LEAD_IN = /^(?:(?:can|could|would)\s+you\s+(?:please\s+)?|please\s+|i\s+want\s+you\s+to\s+)/i;
-const ACTION_VERB_AT_START = /^(?:open|launch|start|play|search|show|go\s+to|bring\s+up|pull\s+up|take\s+me)\b/i;
+/** Loops because fillers/address stack ("Okay so, hey Coco, can you…"). */
+function stripLeadingFillers(clause: string): string {
+  let s = clause;
+  for (;;) {
+    const next = s.replace(FILLER_PREFIX, '').replace(ADDRESS_PREFIX, '');
+    if (next === s) return s;
+    s = next;
+  }
+}
+const LEAD_IN =
+  /^(?:(?:can|could|would)\s+you\s+(?:mind\s+)?(?:please\s*,?\s*)?|please\s*,?\s+|i\s+(?:want|need)\s+you\s+to\s+)/i;
+const ACTION_VERB_AT_START =
+  /^(?:open(?:ing)?|launch(?:ing)?|start(?:ing)?|play(?:ing)?|search(?:ing)?|show(?:ing)?|go(?:ing)?\s+to|bring(?:ing)?\s+up|pull(?:ing)?\s+up|tak(?:e|ing)\s+me)\b/i;
 const WH_QUESTION = /^(?:what|why|how|where|when|who|which)\b.*\?\s*$/i;
 
 export function intentAllowsAction(utterance: string): boolean {
@@ -88,7 +101,7 @@ export function intentAllowsAction(utterance: string): boolean {
     .split(/(?<=[.!?])\s+/)
     .filter((c) => c !== '');
   return clauses.some((rawClause) => {
-    const clause = rawClause.trim().replace(ADDRESS_PREFIX, '');
+    const clause = stripLeadingFillers(rawClause.trim());
     if (WH_QUESTION.test(clause)) return false;
     return ACTION_VERB_AT_START.test(clause.replace(LEAD_IN, ''));
   });

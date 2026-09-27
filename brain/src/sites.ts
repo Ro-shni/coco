@@ -27,12 +27,14 @@ const SEARCH_TEMPLATES: Readonly<Record<string, (query: string) => string>> = {
   google: (q) => `https://www.google.com/search?q=${encodeURIComponent(q)}`,
   github: (q) => `https://github.com/search?q=${encodeURIComponent(q)}`,
 };
-/** The exact URL *prefix* each search template produces (before the query), so `isKnownSiteResult` can
- * recognise "our own" search-result URLs without re-deriving the query. */
-const SEARCH_PREFIXES: readonly string[] = [
-  'https://www.youtube.com/results?search_query=',
-  'https://www.google.com/search?q=',
-  'https://github.com/search?q=',
+/** The origin, path and single query-param key each search template produces — kept in lockstep with
+ * SEARCH_TEMPLATES above (add a row here whenever a template is added there) — so `isKnownSiteResult`
+ * (N2) can recognise "our own" search-result URLs by shape, without a loose `startsWith` that would let
+ * anything ride along after the query (e.g. Google's `&btnI=1` "I'm Feeling Lucky" redirect). */
+const SEARCH_URL_SHAPES: readonly { origin: string; pathname: string; queryKey: string }[] = [
+  { origin: 'https://www.youtube.com', pathname: '/results', queryKey: 'search_query' },
+  { origin: 'https://www.google.com', pathname: '/search', queryKey: 'q' },
+  { origin: 'https://github.com', pathname: '/search', queryKey: 'q' },
 ];
 
 const BROWSERS = ['chrome', 'safari', 'arc', 'firefox', 'brave', 'edge'] as const;
@@ -124,10 +126,31 @@ function websiteUrl(target: string): string | null {
 
 /**
  * True when `url` is exactly a known site's homepage, or matches the shape of one of our own search
- * templates' output (same prefix). Used to decide whether a MODEL-proposed url action is safe to open
- * automatically, or should be confirmed first (M7) — an arbitrary URL on a known host that isn't one of
- * these two shapes (e.g. a specific YouTube video) does not qualify.
+ * templates' output — same origin, same path, and EXACTLY the one query param that template uses (no
+ * extras, no fragment). Used to decide whether a MODEL-proposed url action is safe to open automatically,
+ * or should be confirmed first (M7) — an arbitrary URL on a known host that isn't one of these two exact
+ * shapes (e.g. a specific YouTube video, or a search with an extra `&btnI=1` "I'm Feeling Lucky" redirect
+ * riding along) does not qualify. `URL.origin` also defeats userinfo tricks (`https://youtube.com@evil.com`
+ * has origin `https://evil.com`, not youtube.com) and a different port.
  */
 export function isKnownSiteResult(url: string): boolean {
-  return Object.values(KNOWN_SITES).includes(url) || SEARCH_PREFIXES.some((prefix) => url.startsWith(prefix));
+  let parsed: URL;
+  try {
+    parsed = new URL(url);
+  } catch {
+    return false;
+  }
+  if (parsed.hash) return false;
+
+  const isHomepage = Object.values(KNOWN_SITES).some((homepage) => {
+    const h = new URL(homepage);
+    return parsed.origin === h.origin && parsed.pathname === h.pathname && parsed.search === '';
+  });
+  if (isHomepage) return true;
+
+  return SEARCH_URL_SHAPES.some((shape) => {
+    if (parsed.origin !== shape.origin || parsed.pathname !== shape.pathname) return false;
+    const keys = [...parsed.searchParams.keys()];
+    return keys.length === 1 && keys[0] === shape.queryKey;
+  });
 }

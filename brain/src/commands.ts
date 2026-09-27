@@ -22,6 +22,8 @@ const SUFFIXES: Record<string, 'window' | 'app'> = { window: 'window', tab: 'win
 const QUESTION_WORD = /^(what|why|how|where|when|who|which|me|it|this|that|something)(?:[^a-z]|$)/i;
 const MAX_TARGET_WORDS = 6;
 const MAX_TARGET_CHARS = 60;
+/** N6: an http(s) URL token, so a '?' inside its query string doesn't get mistaken for a question mark. */
+const URL_TOKEN = /https?:\/\/\S+/gi;
 
 /** Strips a matching prefix from the start of text (repeatedly, for stacked prefixes like "hey coco, "). */
 function stripPrefixes(text: string, prefixes: readonly string[]): string {
@@ -58,7 +60,9 @@ function stripTrailing(text: string): string {
 
 export function parseCommand(text: string): Command | null {
   const raw = text.trim();
-  if (raw.includes('?') && !raw.endsWith('?')) return null;
+  // N6: a '?' inside an http(s) URL's own query string ("open https://x.com/?a=1") isn't the "is this a
+  // question" signal this guard exists for — strip URL tokens before testing for a bare '?'.
+  if (raw.replace(URL_TOKEN, '').includes('?') && !raw.endsWith('?')) return null;
 
   const trailingStripped = stripTrailing(raw);
   const s = stripPrefixes(trailingStripped.toLowerCase(), PREFIXES);

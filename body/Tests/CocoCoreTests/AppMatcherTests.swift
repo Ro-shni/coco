@@ -101,4 +101,19 @@ import Testing
     @Test func bestInstalledAppNoMatchReturnsNil() {
         #expect(AppMatcher.bestInstalledApp(for: "figma", in: installedApps) == nil)
     }
+
+    // MARK: - N3: bestInstalledAppWithScore
+
+    @Test func bestInstalledAppWithScoreExactMatchIsStrong() {
+        let match = AppMatcher.bestInstalledAppWithScore(for: "arc", in: installedApps)
+        #expect(match?.candidate.name == "Arc")
+        #expect(match!.score >= AppFocusOrdering.strongInstalledThreshold)
+    }
+
+    @Test func bestInstalledAppWithScoreSubstringMatchIsWeak() {
+        let notes = [InstalledAppCandidate(name: "Notes", bundleId: "com.apple.Notes", url: URL(fileURLWithPath: "/System/Applications/Notes.app"))]
+        let match = AppMatcher.bestInstalledAppWithScore(for: "release notes", in: notes)
+        #expect(match?.candidate.name == "Notes")
+        #expect(match!.score < AppFocusOrdering.strongInstalledThreshold)
+    }
 }

@@ -64,16 +64,24 @@ export class ChatResponder {
     };
 
     let action: ModelAction | undefined;
+    // True once ANY pass has seen a ```action block, even a since-superseded one — used for the I2
+    // fallback below, which must still fire on a later, block-less pass if an earlier pass's action was
+    // rejected (not just absent).
+    let anyBlockPresent = false;
     // Strips a ```action block from `rawText`, gates the result on ctx.intentText — the user's own
-    // utterance, never model/screen text, and never present at all on a chip-derived turn (C1) — and, when
-    // a block was present but no action survived (gated out or schema-invalid), replaces a leftover
+    // utterance, never model/screen text, and never present at all on a chip-derived turn (C1). When a
+    // block was present but no action survived (gated out or schema-invalid), replaces a leftover
     // "Opening…"/"Pulling that up" line with an honest one instead (I2: nothing is actually about to open).
-    // Called on every re-extraction below (I1), since either rewrite loop can itself produce a new block.
+    // N1: a rewrite pass with NO block at all does not touch `action` — the rewrite exists to fix wording,
+    // not to change or drop an already-gated action from an earlier pass. Called on every re-extraction
+    // below (I1), since either rewrite loop can itself produce (or omit) a block.
     const applyAction = (rawText: string): string => {
       const stripped = extractAction(rawText);
-      const blockWasPresent = stripped.blockPresent;
-      action = stripped.action && ctx.intentText !== undefined && intentAllowsAction(ctx.intentText) ? stripped.action : undefined;
-      return blockWasPresent && !action && claimsPendingAction(stripped.text) ? NO_ACTION_FALLBACK : stripped.text;
+      if (stripped.blockPresent) {
+        anyBlockPresent = true;
+        action = stripped.action && ctx.intentText !== undefined && intentAllowsAction(ctx.intentText) ? stripped.action : undefined;
+      }
+      return anyBlockPresent && !action && claimsPendingAction(stripped.text) ? NO_ACTION_FALLBACK : stripped.text;
     };
 
     let raw = await callModel(messages, 0.8);
@@ -92,10 +100,18 @@ export class ChatResponder {
     // Honesty check runs on the non-draft text only: the draft is a message the user will send, not a claim Coco is making.
     const check = checkReply({ text: extracted.text, kind: 'reply', incidentMode: ctx.incidentMode, maxSentences: CHAT_MAX_SENTENCES });
     if (!check.ok) {
+      // N1: when a pending action survived the first pass, tell the model not to re-propose one — the
+      // action itself is unchanged and already being handled; only the wording needs fixing. (The model
+      // can't literally "repeat" its own ```action block here since the priming message above only carries
+      // the already-stripped text — see I1 — so code, not the prompt, is what actually keeps the action
+      // alive across this rewrite; see `applyAction`'s anyBlockPresent handling.)
+      const keepActionHint = action
+        ? " Do not include a new ```action block — the one you already proposed is unchanged and already being handled."
+        : '';
       const rewrite: ChatMessage[] = [
         ...messages,
         { role: 'assistant', content: extracted.text },
-        { role: 'user', content: `Rewrite that reply fixing: ${check.problems.join('; ')}. Output only the rewritten reply.` },
+        { role: 'user', content: `Rewrite that reply fixing: ${check.problems.join('; ')}. Output only the rewritten reply.${keepActionHint}` },
       ];
       raw = await callModel(rewrite, 0.7);
       extracted = extractDraft(raw);

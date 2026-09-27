@@ -34,4 +34,22 @@ describe('parseCommand', () => {
   it('M3: still resolves a known site by name regardless of case', () => {
     expect(parseCommand('Open YouTube')).toEqual({ type: 'open_url', url: 'https://www.youtube.com', label: 'YouTube' });
   });
+
+  it("N6: a '?' inside an http(s) URL's query string doesn't count as a bare question mark", () => {
+    expect(parseCommand('open https://x.com/?a=1')).toEqual({
+      type: 'open_url',
+      url: 'https://x.com/?a=1',
+      label: 'https://x.com/?a=1',
+    });
+    expect(parseCommand('open https://example.com/search?q=1&b=2')).toEqual({
+      type: 'open_url',
+      url: 'https://example.com/search?q=1&b=2',
+      label: 'https://example.com/search?q=1&b=2',
+    });
+  });
+
+  it('N6: a genuine question (not a URL) is still rejected when the "?" is not at the end', () => {
+    expect(parseCommand('open the pod logs for widget-feed-resolver in prd')).toBeNull();
+    expect(parseCommand('is this the right window? go to slack')).toBeNull();
+  });
 });

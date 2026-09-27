@@ -83,7 +83,16 @@ describe('intentAllowsAction', () => {
     ['I want you to open Slack', true],
     ['Coco, open youtube', true],
     ['hey coco, can you open youtube', true],
-    // Wh-questions never pass, even when they mention an action verb.
+    // N4: additional common phrasings the gate previously missed (false negatives), still imperative.
+    ['Hey can you open YouTube for me?', true],
+    ['Please, open that video', true],
+    ['Okay so can you open the deploy dashboard', true],
+    ['ok so open Slack', true],
+    ['so, open the runbook', true],
+    ['I need you to open Slack', true],
+    ['Would you mind opening the docs', true],
+    // Wh-questions still never pass, even with a filler/lead-in and even when they mention an action verb.
+    ['hey what does this show?', false],
     ["what's this?", false],
     ['what is dynamic programming', false],
     ['what does this show?', false],

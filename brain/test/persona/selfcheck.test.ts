@@ -190,16 +190,26 @@ describe('claimsPendingAction', () => {
     'Bringing that up.',
     'Launching Arc for you now.',
     'Searching for that up now.',
-  ])('flags a progressive in-flight claim: %s', (text) => {
+    // I2 remainder (round 2): named by the reviewer as missed false negatives.
+    'Opening it.',
+    'Opening it!',
+    'Launching Arc.',
+    'Launching Slack.',
+    'Let me open that.',
+    'Let me pull that up.',
+    'Here it is.',
+    'Here you go.',
+  ])('flags a progressive in-flight claim or stock hand-off line: %s', (text) => {
     expect(claimsPendingAction(text)).toBe(true);
   });
 
   it.each([
-    'Here you go.',
     "I can't open that right now.",
     "I'm not opening that.",
     'The docs are open in another tab.',
     'Slack is already open.',
+    "That's a Grafana dashboard for supply-prd.",
+    'p99 jumped at 10:40.',
     '',
   ])('does not flag ordinary or negated text: %s', (text) => {
     expect(claimsPendingAction(text)).toBe(false);
@@ -207,6 +217,8 @@ describe('claimsPendingAction', () => {
 
   it('is not also flagged by claimsUnperformedAction (progressive, not a completion claim)', () => {
     expect(claimsUnperformedAction('Opening YouTube for you now.')).toBeNull();
+    expect(claimsUnperformedAction('Here you go.')).toBeNull();
+    expect(claimsUnperformedAction('Launching Arc.')).toBeNull();
   });
 });
 

@@ -24,6 +24,11 @@ enum WindowFocus {
     private static var cacheBuiltAt: Date = .distantPast
     private static let cacheTTL: TimeInterval = 600
     private static var notificationTokens: [NSObjectProtocol] = []
+    /// N6: a launch/terminate notification only triggers a rescan through `InstalledAppRefreshPolicy` —
+    /// never more often than this, and never for an app that's already a known cache entry (its
+    /// launching/quitting doesn't change what's installed).
+    private static var lastRefreshAt: Date = .distantPast
+    private static let refreshDebounce: TimeInterval = 30
 
     /// Call once at startup (AppDelegate). Scans installed apps off-main so the first real focus/launch
     /// doesn't hitch on it, and keeps the cache fresh afterwards via NSWorkspace launch/terminate
@@ -33,12 +38,23 @@ enum WindowFocus {
         refreshCacheInBackground()
         guard notificationTokens.isEmpty else { return }
         let nc = NSWorkspace.shared.notificationCenter
-        let refresh: (Notification) -> Void = { _ in refreshCacheInBackground() }
-        notificationTokens.append(nc.addObserver(forName: NSWorkspace.didLaunchApplicationNotification, object: nil, queue: .main, using: refresh))
-        notificationTokens.append(nc.addObserver(forName: NSWorkspace.didTerminateApplicationNotification, object: nil, queue: .main, using: refresh))
+        let handle: (Notification) -> Void = { note in
+            let bundleURL = (note.userInfo?[NSWorkspace.applicationUserInfoKey] as? NSRunningApplication)?.bundleURL
+            guard InstalledAppRefreshPolicy.shouldRefresh(
+                launchedOrTerminatedURL: bundleURL,
+                cachedApps: cachedApps,
+                now: Date(),
+                lastRefreshAt: lastRefreshAt,
+                debounce: refreshDebounce
+            ) else { return }
+            refreshCacheInBackground()
+        }
+        notificationTokens.append(nc.addObserver(forName: NSWorkspace.didLaunchApplicationNotification, object: nil, queue: .main, using: handle))
+        notificationTokens.append(nc.addObserver(forName: NSWorkspace.didTerminateApplicationNotification, object: nil, queue: .main, using: handle))
     }
 
     private static func refreshCacheInBackground() {
+        lastRefreshAt = Date()
         DispatchQueue.global(qos: .utility).async {
             let apps = scanInstalledApps()
             DispatchQueue.main.async {
@@ -53,19 +69,26 @@ enum WindowFocus {
     /// activated/launched (e.g. "Arc (launched)"), or nil if nothing matched. Must run on main: it drives
     /// AppKit/AX APIs synchronously; `completion` is also delivered on main.
     ///
-    /// I4: for kind `.app`, order is running app → installed app (launch) → window title match. A window
-    /// title match is last resort on purpose — otherwise a browser tab titled "LeetCode – Dynamic
-    /// Programming" would steal "open code" from actually launching VS Code.
+    /// I4/N3: for kind `.app`, order is running app → a STRONG installed-app match (launch) → window title
+    /// → a weak installed-app match (launch, last resort). `AppFocusOrdering` (CocoCore, pure, tested) makes
+    /// the installed-vs-window call — a fuzzy installed match ("release notes" ~ Notes.app) must not steal
+    /// a real window match ("Release notes – Confluence"), but an exact/alias/prefix match ("code" ~
+    /// Code.app) still wins over an unrelated window ("LeetCode – Dynamic Programming").
     static func focus(target: String, kind: FocusKind, completion: @escaping (String?) -> Void) {
         dispatchPrecondition(condition: .onQueue(.main))
         let apps = candidateApps()
         switch kind {
         case .app:
             if let matched = focusApp(target: target, apps: apps) { return completion(matched) }
-            if let best = AppMatcher.bestInstalledApp(for: target, in: installedAppCandidates()) {
-                return launch(best, completion: completion)
+            let windows = windowCandidates(apps)
+            switch AppFocusOrdering.decide(target: target, installedApps: installedAppCandidates(), windows: windows) {
+            case .launchInstalled(let candidate):
+                launch(candidate, completion: completion)
+            case .focusWindow(let window):
+                completion(activateWindow(window, apps: apps))
+            case .none:
+                completion(nil)
             }
-            completion(focusWindow(target: target, apps: apps))
         case .window:
             if let matched = focusWindow(target: target, apps: apps) { return completion(matched) }
             completion(focusApp(target: target, apps: apps))
@@ -150,6 +173,12 @@ enum WindowFocus {
     private static func focusWindow(target: String, apps: [NSRunningApplication]) -> String? {
         let candidates = windowCandidates(apps)
         guard let best = AppMatcher.bestWindow(for: target, in: candidates) else { return nil }
+        return activateWindow(best, apps: apps)
+    }
+
+    /// Raises and activates an already-matched window (see `AppFocusOrdering`, which does the matching
+    /// itself to decide between a window and an installed-app launch).
+    private static func activateWindow(_ best: WindowCandidate, apps: [NSRunningApplication]) -> String? {
         guard let app = apps.first(where: { $0.processIdentifier == best.pid }) else { return nil }
         if let windowElement = windowElement(for: best, app: app) {
             AXUIElementPerformAction(windowElement, kAXRaiseAction as CFString)

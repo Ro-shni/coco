@@ -14,6 +14,7 @@ import { MUTE_MS, nextLocalMidnight, type NudgePolicy } from './nudge/policy.js'
 import type { NudgeDecision } from './persona/decision.js';
 import type { DecideInput } from './persona/decider.js';
 import type { ModelAction } from './persona/actions.js';
+import { claimsPendingAction } from './persona/selfcheck.js';
 import { isKnownSiteResult } from './sites.js';
 import type {
   ActivityState,
@@ -581,13 +582,23 @@ export class Orchestrator {
       // chip, rather than opened automatically — a specific video/page/login page is not the same trust
       // level as "the YouTube homepage" or "a YouTube search".
       const urlAction = reply.action?.open === 'url' ? reply.action : undefined;
-      const host = urlAction && !isKnownSiteResult(urlAction.url) ? hostOf(urlAction.url) : undefined;
-      const deliveryText = host && reply.text === '' ? `Want me to open ${urlAction!.label}?` : reply.text;
+      const needsConfirm = urlAction !== undefined && !isKnownSiteResult(urlAction.url);
+      // N5: a draft and a confirm-needed url in the same reply is a rare, awkward combination. Simplest and
+      // safest: drop the open action entirely rather than combine chip sets (the draft's "paste into
+      // <App>" chip alongside an "Open <host>" chip) or silently auto-open something unconfirmed.
+      const dropForDraft = needsConfirm && Boolean(reply.draft);
+      const host = needsConfirm && !dropForDraft ? hostOf(urlAction!.url) : undefined;
+
+      // N5: the model's own line can read like the open is already happening ("Opening the playlist for
+      // you now.") even though Coco is either about to ask first, or (dropForDraft) not opening it at all —
+      // replace a line that implies that with an honest one instead of showing it next to an unopened chip.
+      const impliesOpening = reply.text === '' || claimsPendingAction(reply.text);
+      const deliveryText = host && impliesOpening ? `Want me to open ${urlAction!.label}?` : reply.text;
 
       const sayId = this.deliverChatReply({ ...reply, text: deliveryText }, cur?.msg, source, host ? [`Open ${host}`, 'dismiss'] : undefined);
       this.rememberOffer(deliveryText);
 
-      if (reply.action && !host) {
+      if (reply.action && !needsConfirm) {
         this.executeModelAction(reply.action, text, source);
       } else if (host && urlAction && sayId) {
         this.pendingUrlConfirm = { nudgeId: sayId, url: urlAction.url, label: urlAction.label, host, at: this.d.clock() };

@@ -48,11 +48,18 @@ public enum AppMatcher {
     ]
 
     public static func bestApp(for query: String, in apps: [AppCandidate]) -> AppCandidate? {
-        bestByNameAndBundle(query: query, candidates: apps, name: \.name, bundleId: \.bundleId)
+        bestByNameAndBundle(query: query, candidates: apps, name: \.name, bundleId: \.bundleId)?.candidate
     }
 
     /// Same matching logic as `bestApp`, over apps found on disk rather than running processes.
     public static func bestInstalledApp(for query: String, in apps: [InstalledAppCandidate]) -> InstalledAppCandidate? {
+        bestByNameAndBundle(query: query, candidates: apps, name: \.name, bundleId: \.bundleId)?.candidate
+    }
+
+    /// N3: same match as `bestInstalledApp`, but with its score too, so a caller (`AppFocusOrdering`) can
+    /// tell a strong match (exact/alias/prefix, >= `AppFocusOrdering.strongInstalledThreshold`) apart from
+    /// a merely-fuzzy one that shouldn't be preferred over a real window-title match.
+    public static func bestInstalledAppWithScore(for query: String, in apps: [InstalledAppCandidate]) -> (candidate: InstalledAppCandidate, score: Double)? {
         bestByNameAndBundle(query: query, candidates: apps, name: \.name, bundleId: \.bundleId)
     }
 
@@ -61,7 +68,7 @@ public enum AppMatcher {
         candidates: [Candidate],
         name: (Candidate) -> String,
         bundleId: (Candidate) -> String
-    ) -> Candidate? {
+    ) -> (candidate: Candidate, score: Double)? {
         let normalisedQuery = normalise(query)
         guard !normalisedQuery.isEmpty else { return nil }
         let canonicalForms = aliases[normalisedQuery]
@@ -75,7 +82,7 @@ public enum AppMatcher {
             }
             best = (candidate, score)
         }
-        return best?.candidate
+        return best
     }
 
     public static func bestWindow(for query: String, in windows: [WindowCandidate]) -> WindowCandidate? {

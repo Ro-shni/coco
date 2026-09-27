@@ -733,6 +733,35 @@ describe('model-proposed actions', () => {
       expect(s.sent.filter((m) => m.type === 'open_url')).toHaveLength(1);
       expect(s.says().at(-1)?.chips ?? []).not.toContain(expect.stringMatching(/^Open /));
     });
+
+    it('N5: replaces a non-empty line that implies the open already happened, not just an empty one', async () => {
+      const s = setup();
+      s.reply.mockResolvedValue({ text: 'Opening that for you now.', draft: null, action: specificVideo });
+      await s.o.handle(utter('open that dp playlist'));
+      expect(s.says().at(-1)).toMatchObject({ text: 'Want me to open Aditya Verma DP playlist?', chips: ['Open www.youtube.com', 'dismiss'] });
+      expect(s.sent.filter((m) => m.type === 'open_url')).toHaveLength(0);
+    });
+
+    it('N5: leaves an ordinary (non-pending-implying) line next to the confirm chips alone', async () => {
+      const s = setup();
+      s.reply.mockResolvedValue({ text: 'Found the DP playlist you meant.', draft: null, action: specificVideo });
+      await s.o.handle(utter('open that dp playlist'));
+      expect(s.says().at(-1)).toMatchObject({ text: 'Found the DP playlist you meant.', chips: ['Open www.youtube.com', 'dismiss'] });
+    });
+
+    it('N5: drops the open action entirely when the reply also carries a draft, rather than combining chip sets or auto-opening', async () => {
+      const s = setup();
+      s.reply.mockResolvedValue({ text: 'Here you go.', draft: "I'll check that playlist later.", action: specificVideo });
+      await s.o.handle(utter('open that dp playlist'));
+      expect(s.sent.filter((m) => m.type === 'open_url' || m.type === 'focus')).toHaveLength(0);
+      const last = s.says().at(-1)!;
+      expect(last.draft).toBe("I'll check that playlist later.");
+      expect(last.chips ?? []).not.toContain(expect.stringMatching(/^Open /));
+      // No pendingUrlConfirm was left dangling either: a later click on some other chip with this nudgeId
+      // must not open anything.
+      await s.o.handle({ v: 1, type: 'chip', nudgeId: last.nudgeId, choice: 'Open www.youtube.com' });
+      expect(s.sent.filter((m) => m.type === 'open_url')).toHaveLength(0);
+    });
   });
 
   it('passes the raw utterance as ctx.intentText for a normal utterance turn', async () => {
