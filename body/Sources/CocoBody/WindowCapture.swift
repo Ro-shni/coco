@@ -36,7 +36,23 @@ enum WindowCapture {
         return WindowInfo(id: picked.id, bounds: picked.bounds)
     }
 
+    /// ScreenCaptureKit occasionally never calls back; without a bound, Perception's single in-flight capture
+    /// would block every later sample and Coco would keep describing a stale screen.
+    private static let captureDeadlineSeconds: TimeInterval = 4
+
     static func capture(windowID: CGWindowID, maxDimension: CGFloat) async throws -> CGImage {
+        do {
+            return try await Deadline.run(seconds: captureDeadlineSeconds) {
+                try await captureWithRetry(windowID: windowID, maxDimension: maxDimension)
+            }
+        } catch DeadlineError.timedOut {
+            FileLog.body.warn("capture-diag timeout windowID=\(windowID)")
+            _ = await MainActor.run { cachedWindows.removeValue(forKey: windowID) }
+            throw DeadlineError.timedOut
+        }
+    }
+
+    private static func captureWithRetry(windowID: CGWindowID, maxDimension: CGFloat) async throws -> CGImage {
         do {
             return try await captureOnce(windowID: windowID, maxDimension: maxDimension)
         } catch {

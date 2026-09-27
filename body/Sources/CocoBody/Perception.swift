@@ -11,6 +11,9 @@ final class Perception {
     private var detector = ContextChangeDetector()
     private var timer: Timer?
     private var capturing = false
+    private var captureStartedAt: Date?
+    /// Backstop in case a capture never clears `capturing` (the per-call deadline should make this unreachable).
+    private static let captureWatchdogSeconds: TimeInterval = 10
     private var lastHash: (window: CGWindowID, hash: UInt64)?
     private var lastOCR = ""
     private var lastBoxes: [TextBox] = []
@@ -62,6 +65,10 @@ final class Perception {
     }
 
     private func step() {
+        if capturing, let started = captureStartedAt, Date().timeIntervalSince(started) > Self.captureWatchdogSeconds {
+            FileLog.body.warn("capture-diag watchdog reset after \(Int(Date().timeIntervalSince(started)))s")
+            capturing = false
+        }
         guard !capturing else { return }
         if paused {
             emit(ContextPayload(app: "Coco (paused)", bundleId: "", windowTitle: "", isPrivate: true, ts: nowMs()))
@@ -84,6 +91,7 @@ final class Perception {
         }
         guard let window = WindowCapture.frontWindow(pid: snap.pid, focusedTitle: snap.windowTitle) else { emit(base); return }
         capturing = true
+        captureStartedAt = Date()
         Task { await self.captureAndRead(window: window, base: base) }
     }
 
