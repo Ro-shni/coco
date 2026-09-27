@@ -37,6 +37,16 @@ import Testing
         #expect(AppMatcher.bestApp(for: "figma", in: apps) == nil)
     }
 
+    // Compound-commands-trace brief: "open gmail on google" was parsed (before the brain-side parser fix)
+    // as a bare focus target "gmailongoogle", which the old containment rule (any length ratio, >= 3 chars)
+    // then matched against "Mail" — 0.8 containment score, above appThreshold. The rule now requires the
+    // shorter (normalised) string to be at least 60% of the longer's length, so a garbled, much-longer query
+    // no longer rides in on a short app name.
+    @Test func garbledCompoundQueryDoesNotMatchUnrelatedShortAppName() {
+        let candidates = [AppCandidate(name: "Mail", bundleId: "com.apple.mail", pid: 20)]
+        #expect(AppMatcher.bestApp(for: "gmailongoogle", in: candidates) == nil)
+    }
+
     @Test func bundleIdFallbackMatchesSlack() {
         #expect(AppMatcher.bestApp(for: "tinyspeck", in: apps)?.name == "Slack")
     }
@@ -111,8 +121,13 @@ import Testing
     }
 
     @Test func bestInstalledAppWithScoreSubstringMatchIsWeak() {
+        // Compound-commands-trace brief (N4/21): the containment rule now only scores when the shorter
+        // (normalised) string is >= 60% of the longer's length. "release notes" vs "notes" (5/12 ≈ 0.42)
+        // falls below that floor, so it no longer matches at all (see garbledCompoundQueryDoesNotMatch...
+        // above for that exact scenario) — "notes app" (5/8 = 0.625) still clears it and still exercises a
+        // genuine, merely-fuzzy containment match, below strongInstalledThreshold.
         let notes = [InstalledAppCandidate(name: "Notes", bundleId: "com.apple.Notes", url: URL(fileURLWithPath: "/System/Applications/Notes.app"))]
-        let match = AppMatcher.bestInstalledAppWithScore(for: "release notes", in: notes)
+        let match = AppMatcher.bestInstalledAppWithScore(for: "notes app", in: notes)
         #expect(match?.candidate.name == "Notes")
         #expect(match!.score < AppFocusOrdering.strongInstalledThreshold)
     }

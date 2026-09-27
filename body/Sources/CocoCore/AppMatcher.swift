@@ -34,6 +34,9 @@ public struct WindowCandidate: Equatable, Sendable {
 public enum AppMatcher {
     private static let appThreshold = 0.7
     private static let windowThreshold = 0.5
+    /// N4/21: the "one contains the other" name/bundle match only scores when the shorter (normalised)
+    /// string is at least this fraction of the longer's length.
+    private static let containmentMinRatio = 0.6
 
     /// Query (normalised) -> canonical normalised app names it may refer to.
     private static let aliases: [String: [String]] = [
@@ -110,7 +113,13 @@ public enum AppMatcher {
         if let canonicalForms, canonicalForms.contains(normalisedName) { return 1.0 }
         if normalisedName.hasPrefix(normalisedQuery) { return 0.9 }
         let shortestLength = min(normalisedName.count, normalisedQuery.count)
-        if shortestLength >= 3 && (normalisedName.contains(normalisedQuery) || normalisedQuery.contains(normalisedName)) {
+        let longestLength = max(normalisedName.count, normalisedQuery.count)
+        // N4/21: containment alone (e.g. a garbled multi-word query like "gmailongoogle" swallowing the
+        // whole remainder of a compound command) must not let a much-longer string ride in on a much-shorter
+        // one just because one contains the other — require the shorter side to be a real fraction of the
+        // longer, not just >= 3 chars.
+        if shortestLength >= 3 && Double(shortestLength) / Double(longestLength) >= containmentMinRatio
+            && (normalisedName.contains(normalisedQuery) || normalisedQuery.contains(normalisedName)) {
             return 0.8
         }
         return bundleScore(bundleId: bundleId, normalisedQuery: normalisedQuery)

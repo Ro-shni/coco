@@ -20,6 +20,13 @@ const VERBS = [
 const ARTICLES = ['the ', 'my '];
 const SUFFIXES: Record<string, 'window' | 'app'> = { window: 'window', tab: 'window', app: 'app' };
 const QUESTION_WORD = /^(what|why|how|where|when|who|which|me|it|this|that|something)(?:[^a-z]|$)/i;
+/** A connector word/comma left over in a focus target means the parser is about to swallow a compound
+ * sentence (e.g. "slack and say hi", "notion in chrome") as if it were a single app/window name — better
+ * to return null and let the model (with the existing intent gate) handle it than guess. Padding the
+ * target with spaces lets the same pattern catch a connector word at either edge, not just mid-string.
+ * parseSiteCommand already handles a legitimate trailing "in/on <browser-ish word>" itself (returning a
+ * site command directly, before this fallback ever runs), so this never has to carve that case out. */
+const CONNECTOR_WORD = /(?: and | then | on | in )|,/;
 const MAX_TARGET_WORDS = 6;
 const MAX_TARGET_CHARS = 60;
 /** N6: an http(s) URL token, so a '?' inside its query string doesn't get mistaken for a question mark. */
@@ -93,6 +100,7 @@ export function parseCommand(text: string): Command | null {
   if (target.length > MAX_TARGET_CHARS) return null;
   if (QUESTION_WORD.test(target)) return null;
   if (target.includes('?') && !target.endsWith('?')) return null;
+  if (CONNECTOR_WORD.test(` ${target} `)) return null;
 
   return { type: 'focus', target, kind };
 }

@@ -65,7 +65,12 @@ import Testing
     // A weak installed match still wins as a last resort when NO window matches either.
 
     @Test func weakInstalledMatchLaunchesWhenNoWindowMatches() {
-        let decision = AppFocusOrdering.decide(target: "release notes", installedApps: [notes], windows: [])
+        // Compound-commands-trace brief (N4/21): the containment rule now only scores when the shorter
+        // (normalised) string is >= 60% of the longer's length. "release notes" vs "notes" (5/12 ≈ 0.42)
+        // falls below that floor and no longer matches at all — "notes app" (5/8 = 0.625) still clears it
+        // and still exercises a genuine, merely-fuzzy containment match as the last-resort case this test
+        // is about.
+        let decision = AppFocusOrdering.decide(target: "notes app", installedApps: [notes], windows: [])
         guard case .launchInstalled(let candidate) = decision else {
             Issue.record("expected .launchInstalled, got \(decision)")
             return

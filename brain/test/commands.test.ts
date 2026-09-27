@@ -19,6 +19,29 @@ describe('parseCommand', () => {
     ['open readme.md', { type: 'focus', target: 'readme.md', kind: 'app' }],
     ['open zoom.us', { type: 'focus', target: 'zoom.us', kind: 'app' }],
     ['open github.com/x', { type: 'open_url', url: 'https://github.com/x', label: 'github.com/x' }],
+    // Compound-commands-trace brief: "Can you open Mail?" still focuses the app (unchanged).
+    ['Can you open Mail?', { type: 'focus', target: 'mail', kind: 'app' }],
+    // "<site> on|in <google|the web|browser|chrome|…>" -> open_url for the site. "on google"/"the web"/
+    // "browser" mean the default browser (no `browser` field); a real browser name sets it.
+    ['Open Gmail on Google', { type: 'open_url', url: 'https://mail.google.com', label: 'Gmail' }],
+    // "open|launch <browser-ish word> and (type|search|search for|look up|go to|open) <X>": X is a known
+    // site -> open_url that site; commas/quotes around X are stripped.
+    ['Open Google and type, Gmail', { type: 'open_url', url: 'https://mail.google.com', label: 'Gmail' }],
+    ['Open chrome and type, Gmail', { type: 'open_url', url: 'https://mail.google.com', label: 'Gmail', browser: 'chrome' }],
+    // Regression: app names that aren't known sites still focus normally, even when the whole remainder
+    // (verb + rest) would otherwise look like a compound command.
+    ['open slack', { type: 'focus', target: 'slack', kind: 'app' }],
+    ['open code', { type: 'focus', target: 'code', kind: 'app' }],
+    ['go to the release notes', { type: 'focus', target: 'release notes', kind: 'app' }],
+    // notion isn't a known site, so "in chrome" is just a stray connector word in an app target -> null,
+    // not a guess at either focus or open_url.
+    ['open notion in chrome', null],
+    ['search youtube for aditya dp in arc', {
+      type: 'open_url',
+      url: 'https://www.youtube.com/results?search_query=aditya%20dp',
+      label: 'aditya dp on YouTube',
+      browser: 'arc',
+    }],
   ] as const)('%s', (text, expected) => {
     expect(parseCommand(text)).toEqual(expected);
   });

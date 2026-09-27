@@ -52,6 +52,35 @@ describe('parseSiteCommand', () => {
     ['go to grafana', null],
     ['open the pod logs for widget-feed-resolver in prd', null],
     ['', null],
+
+    // Compound-commands-trace brief, requirement 1: "<site> on|in <destination>" -> open_url for the site.
+    // "google"/"the web"/"browser" mean the default browser (no `browser` field); a real browser name sets it.
+    ['open gmail on google', { type: 'open_url', url: 'https://mail.google.com', label: 'Gmail' }],
+    ['open gmail on the web', { type: 'open_url', url: 'https://mail.google.com', label: 'Gmail' }],
+    ['open gmail on browser', { type: 'open_url', url: 'https://mail.google.com', label: 'Gmail' }],
+    ['open gmail on chrome', { type: 'open_url', url: 'https://mail.google.com', label: 'Gmail', browser: 'chrome' }],
+    ['open gmail in chrome', { type: 'open_url', url: 'https://mail.google.com', label: 'Gmail', browser: 'chrome' }],
+    ['go to youtube on arc', { type: 'open_url', url: 'https://www.youtube.com', label: 'YouTube', browser: 'arc' }],
+    // notion isn't a known site (or a domain), so the destination suffix alone isn't enough to open anything.
+    ['open notion on chrome', null],
+
+    // Requirement 2: "open|launch <browser-ish word> and (type|search|search for|look up|go to|open) <X>".
+    // X naming a known site (or domain) opens it directly; otherwise it's a Google search for X. Commas and
+    // quotes around X are stripped. Only a real browser name (not "google"/"browser") sets `browser`.
+    ['open google and type, gmail', { type: 'open_url', url: 'https://mail.google.com', label: 'Gmail' }],
+    ['open chrome and type, gmail', { type: 'open_url', url: 'https://mail.google.com', label: 'Gmail', browser: 'chrome' }],
+    ['launch browser and search for gmail', { type: 'open_url', url: 'https://mail.google.com', label: 'Gmail' }],
+    ['open chrome and go to "github.com"', { type: 'open_url', url: 'https://github.com', label: 'github.com', browser: 'chrome' }],
+    [
+      'open chrome and look up dynamic programming',
+      { type: 'open_url', url: 'https://www.google.com/search?q=dynamic%20programming', label: 'dynamic programming on Google', browser: 'chrome' },
+    ],
+    [
+      'open google and open dynamic programming',
+      { type: 'open_url', url: 'https://www.google.com/search?q=dynamic%20programming', label: 'dynamic programming on Google' },
+    ],
+    // "open <app> and <anything else>" where app isn't a browser -> null (fall through to the model).
+    ['open slack and say hi', null],
   ] as const)('%s', (text, expected) => {
     expect(parseSiteCommand(text)).toEqual(expected);
   });
