@@ -43,9 +43,29 @@ fi
 
 mkdir -p "$SCRATCH"
 (cd "$BODY" && swift build -c release --scratch-path "$SCRATCH")
+
+# Validate binary exists and check for staleness
+BIN="$SCRATCH/release/CocoBody"
+[ -f "$BIN" ] || { echo "Error: Binary not found at $BIN after swift build" >&2; exit 1; }
+
+# Check if any source file is newer than the compiled binary
+STALE_FILE=$(find "$BODY/Sources" "$BODY/Package.swift" -name '*.swift' -newer "$BIN" 2>/dev/null | head -1)
+if [ -n "$STALE_FILE" ]; then
+  echo "Stale build: $STALE_FILE is newer than the compiled binary — rebuilding clean" >&2
+  rm -rf "$SCRATCH/release"
+  (cd "$BODY" && swift build -c release --scratch-path "$SCRATCH")
+  # Recheck after clean rebuild
+  [ -f "$BIN" ] || { echo "Error: Binary not found after clean rebuild at $BIN" >&2; exit 1; }
+  STALE_FILE=$(find "$BODY/Sources" "$BODY/Package.swift" -name '*.swift' -newer "$BIN" 2>/dev/null | head -1)
+  [ -z "$STALE_FILE" ] || { echo "Error: Binary still stale after rebuild (source: $STALE_FILE)" >&2; exit 1; }
+fi
+
 rm -rf "$APP"
 mkdir -p "$APP/Contents/MacOS" "$APP/Contents/Resources"
 cp "$SCRATCH/release/CocoBody" "$APP/Contents/MacOS/CocoBody"
+BIN_DATE=$(stat -f '%Sm' -t '%Y-%m-%d %H:%M:%S' "$BIN" 2>/dev/null || date -r "$BIN" '+%Y-%m-%d %H:%M:%S')
+BIN_SIZE=$(stat -f '%z' "$BIN" 2>/dev/null || stat -c '%s' "$BIN")
+echo "Binary: $BIN_DATE ($BIN_SIZE bytes)"
 
 cat > "$APP/Contents/Info.plist" <<PLIST
 <?xml version="1.0" encoding="UTF-8"?>
