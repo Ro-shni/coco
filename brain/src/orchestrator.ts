@@ -1,4 +1,4 @@
-import type { ChatContext } from './chat.js';
+import type { ChatContext, ChatReply } from './chat.js';
 import type { Command } from './commands.js';
 import { parseCommand } from './commands.js';
 import { detectFocusOffer, isAffirmation } from './offers.js';
@@ -11,10 +11,21 @@ import type { Logger } from './logger.js';
 import type { Memory, NudgeOutcome } from './memory.js';
 import { ModelUnavailableError, PRIORITY, type ModelGateway, type Priority } from './model/gateway.js';
 import { MUTE_MS, nextLocalMidnight, type NudgePolicy } from './nudge/policy.js';
-import type { ExtractedDraft } from './persona/drafts.js';
 import type { NudgeDecision } from './persona/decision.js';
 import type { DecideInput } from './persona/decider.js';
-import type { ActivityState, BodyToBrain, BrainToBody, ContextMsg, FocusResultMsg, KeyframeMsg, Mood, PasteResultMsg, SayKind } from './protocol.js';
+import type { ModelAction } from './persona/actions.js';
+import type {
+  ActivityState,
+  BodyToBrain,
+  BrainToBody,
+  ContextMsg,
+  FocusResultMsg,
+  KeyframeMsg,
+  Mood,
+  OpenUrlResultMsg,
+  PasteResultMsg,
+  SayKind,
+} from './protocol.js';
 
 export interface OrchestratorDeps {
   send: (msg: BrainToBody) => void;
@@ -26,7 +37,7 @@ export interface OrchestratorDeps {
   policy: NudgePolicy;
   triggers: TriggerDeduper;
   decider: { decide(input: DecideInput, priority: Priority): Promise<NudgeDecision | null> };
-  chat: { reply(text: string, ctx: ChatContext): Promise<ExtractedDraft> };
+  chat: { reply(text: string, ctx: ChatContext): Promise<ChatReply> };
   memory: Memory;
   gateway: Pick<ModelGateway, 'health'>;
   keyframesEnabled: boolean;
@@ -50,7 +61,14 @@ type Source = 'voice' | 'chat';
 interface PendingFocus {
   requestId: string;
   target: string;
-  kind: Command['kind'];
+  kind: 'app' | 'window';
+  source: Source;
+  at: number;
+}
+
+interface PendingOpen {
+  requestId: string;
+  label: string;
   source: Source;
   at: number;
 }
@@ -79,6 +97,7 @@ interface PendingPaste {
 const KEYFRAME_FRESH_MS = 60_000;
 const OFFER_TTL_MS = 120_000;
 const FOCUS_TIMEOUT_MS = 5000;
+const OPEN_TIMEOUT_MS = 5000;
 const DRAFT_TTL_MS = 10 * 60_000;
 const PASTE_TIMEOUT_MS = 5000;
 /** "paste", "paste it", "paste that", "paste the draft", "paste into <App>" — the only utterances that trigger a paste. */
@@ -119,6 +138,7 @@ export class Orchestrator {
   private pending: readonly PendingNudge[] = [];
   private pendingTrigger: PendingTrigger | undefined;
   private pendingFocus: PendingFocus | undefined;
+  private pendingOpen: PendingOpen | undefined;
   /** A "bring X to the front" offer Coco just made; a bare "sure" within OFFER_TTL_MS accepts it. */
   private pendingOffer: PendingOffer | undefined;
   /** The most recent draft Coco offered to paste (non-private context only); stale after DRAFT_TTL_MS. */
@@ -157,6 +177,8 @@ export class Orchestrator {
         return this.onFocusResult(msg);
       case 'paste_result':
         return this.onPasteResult(msg);
+      case 'open_url_result':
+        return this.onOpenUrlResult(msg);
     }
   }
 
@@ -170,6 +192,7 @@ export class Orchestrator {
     const now = this.d.clock();
     this.expirePending(now);
     this.expirePendingFocus(now);
+    this.expirePendingOpen(now);
     this.expirePendingPaste(now);
     this.clearStalePendingTrigger(now);
     this.maybeRequestKeyframe(now);
@@ -259,7 +282,7 @@ export class Orchestrator {
       return;
     }
     const cmd = parseCommand(text);
-    if (cmd) return this.startFocus(cmd, text, now, source);
+    if (cmd) return cmd.type === 'open_url' ? this.startOpenUrl(cmd, text, now, source) : this.startFocus(cmd, text, now, source);
     await this.answer(text, source);
   }
 
@@ -276,11 +299,18 @@ export class Orchestrator {
     this.pendingOffer = target ? { target, kind: 'app', at: this.d.clock() } : undefined;
   }
 
-  private startFocus(cmd: Command, text: string, now: number, source: Source): void {
+  private startFocus(cmd: Extract<Command, { type: 'focus' }>, text: string, now: number, source: Source, recordUserTurn = true): void {
     const requestId = this.d.newId();
     this.pendingFocus = { requestId, target: cmd.target, kind: cmd.kind, source, at: now };
     this.d.send({ v: 1, type: 'focus', requestId, target: cmd.target, kind: cmd.kind });
-    this.d.memory.addTurn('user', text, now);
+    if (recordUserTurn) this.d.memory.addTurn('user', text, now);
+  }
+
+  private startOpenUrl(cmd: Extract<Command, { type: 'open_url' }>, text: string, now: number, source: Source, recordUserTurn = true): void {
+    const requestId = this.d.newId();
+    this.pendingOpen = { requestId, label: cmd.label, source, at: now };
+    this.d.send({ v: 1, type: 'open_url', requestId, url: cmd.url, ...(cmd.browser ? { browser: cmd.browser } : {}) });
+    if (recordUserTurn) this.d.memory.addTurn('user', text, now);
   }
 
   private async onChip(id: string, choice: string): Promise<void> {
@@ -403,6 +433,23 @@ export class Orchestrator {
     this.say("That switch didn't go through.", 'reply', { speak: this.speakForCommandConfirmation(p.source) });
   }
 
+  private onOpenUrlResult(msg: OpenUrlResultMsg): void {
+    const p = this.pendingOpen;
+    if (!p || p.requestId !== msg.requestId) return;
+    this.pendingOpen = undefined;
+    const now = this.d.clock();
+    const text = msg.ok ? `Opening ${msg.opened ?? p.label}…` : `I couldn't open ${p.label}.`;
+    this.say(text, 'reply', { speak: this.speakForCommandConfirmation(p.source) });
+    this.d.memory.addTurn('assistant', text, now);
+  }
+
+  private expirePendingOpen(now: number): void {
+    const p = this.pendingOpen;
+    if (!p || now - p.at < OPEN_TIMEOUT_MS) return;
+    this.pendingOpen = undefined;
+    this.say("That didn't open.", 'reply', { speak: this.speakForCommandConfirmation(p.source) });
+  }
+
   private clearStalePendingTrigger(now: number): void {
     const p = this.pendingTrigger;
     if (!p) return;
@@ -466,6 +513,7 @@ export class Orchestrator {
       this.announceRecoveryIfNeeded();
       this.deliverChatReply(reply, cur?.msg, source);
       this.rememberOffer(reply.text);
+      if (reply.action) this.executeModelAction(reply.action, text, source);
     } catch (err) {
       const wasOnline = this.online;
       this.onModelError(err);
@@ -474,12 +522,23 @@ export class Orchestrator {
     }
   }
 
-  /** Sends the chat reply as a say; when it carries a draft and the current context is a known, non-private app, attaches draftApp/the paste chip and remembers it as lastDraft. Speaks only `text`, never `draft` — the Body speaks the say's `text` field, which extractDraft has already stripped of any draft content. */
-  private deliverChatReply(reply: ExtractedDraft, current: ContextMsg | undefined, source: Source): void {
+  /** Executes a model-proposed action the same way a parsed command would (focus for an app, open_url for a
+   * website): `recordUserTurn: false` since chat.reply() already recorded this turn in memory. */
+  private executeModelAction(action: ModelAction, text: string, source: Source): void {
+    const now = this.d.clock();
+    if (action.open === 'app') {
+      this.startFocus({ type: 'focus', target: action.target, kind: 'app' }, text, now, source, false);
+    } else {
+      this.startOpenUrl({ type: 'open_url', url: action.url, label: action.label }, text, now, source, false);
+    }
+  }
+
+  /** Sends the chat reply as a say; when it carries a draft and the current context is a known, non-private app, attaches draftApp/the paste chip and remembers it as lastDraft. Speaks only `text`, never `draft` — the Body speaks the say's `text` field, which extractDraft has already stripped of any draft content. An empty `text` (the model's own completion-claim line was dropped alongside a still-pending action) sends no bubble at all — the action's result handler speaks for that turn instead. */
+  private deliverChatReply(reply: ChatReply, current: ContextMsg | undefined, source: Source): void {
     const speak = this.speakForReply(source);
     if (!reply.draft) {
       this.lastDraft = undefined;
-      this.say(reply.text, 'reply', { speak });
+      if (reply.text !== '') this.say(reply.text, 'reply', { speak });
       return;
     }
     const app = current && !current.private ? current.app : undefined;

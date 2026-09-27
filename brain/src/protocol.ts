@@ -69,7 +69,26 @@ export const PasteResultMsg = z.object({
 });
 export type PasteResultMsg = z.infer<typeof PasteResultMsg>;
 
-export const BodyToBrain = z.discriminatedUnion('type', [ContextMsg, ActivityMsg, KeyframeMsg, UtteranceMsg, ChipMsg, FocusResultMsg, PasteResultMsg]);
+export const OpenUrlResultMsg = z.object({
+  v,
+  type: z.literal('open_url_result'),
+  requestId: z.string(),
+  ok: z.boolean(),
+  opened: z.string().optional(),
+  error: z.string().optional(),
+});
+export type OpenUrlResultMsg = z.infer<typeof OpenUrlResultMsg>;
+
+export const BodyToBrain = z.discriminatedUnion('type', [
+  ContextMsg,
+  ActivityMsg,
+  KeyframeMsg,
+  UtteranceMsg,
+  ChipMsg,
+  FocusResultMsg,
+  PasteResultMsg,
+  OpenUrlResultMsg,
+]);
 export type BodyToBrain = z.infer<typeof BodyToBrain>;
 
 export const SayMsg = z.object({
@@ -110,7 +129,16 @@ export const PasteMsg = z.object({
 });
 export type PasteMsg = z.infer<typeof PasteMsg>;
 
-export const BrainToBody = z.discriminatedUnion('type', [SayMsg, RequestKeyframeMsg, MoodMsg, FocusMsg, PasteMsg]);
+export const OpenUrlMsg = z.object({
+  v,
+  type: z.literal('open_url'),
+  requestId: z.string().min(1),
+  url: z.string().min(1),
+  browser: z.string().min(1).max(60).optional(),
+});
+export type OpenUrlMsg = z.infer<typeof OpenUrlMsg>;
+
+export const BrainToBody = z.discriminatedUnion('type', [SayMsg, RequestKeyframeMsg, MoodMsg, FocusMsg, PasteMsg, OpenUrlMsg]);
 export type BrainToBody = z.infer<typeof BrainToBody>;
 
 export function parseBodyMessage(raw: string): BodyToBrain | null {

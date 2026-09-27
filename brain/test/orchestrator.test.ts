@@ -540,6 +540,107 @@ describe('focus commands', () => {
   });
 });
 
+describe('open url commands', () => {
+  it('sends an open_url message for "open youtube" instead of consulting chat or the decider', async () => {
+    const s = setup();
+    await s.o.handle({ v: 1, type: 'utterance', text: 'open youtube', source: 'chat' });
+    expect(s.reply).not.toHaveBeenCalled();
+    expect(s.decide).not.toHaveBeenCalled();
+    expect(s.sent.filter((m) => m.type === 'open_url')).toEqual([
+      { v: 1, type: 'open_url', requestId: 'n1', url: 'https://www.youtube.com' },
+    ]);
+  });
+
+  it('passes the browser through when the utterance names one', async () => {
+    const s = setup();
+    await s.o.handle({ v: 1, type: 'utterance', text: 'open youtube in chrome', source: 'chat' });
+    expect(s.sent.filter((m) => m.type === 'open_url')).toEqual([
+      { v: 1, type: 'open_url', requestId: 'n1', url: 'https://www.youtube.com', browser: 'chrome' },
+    ]);
+  });
+
+  it('says "Opening X…" once the body confirms it opened', async () => {
+    const s = setup();
+    await s.o.handle({ v: 1, type: 'utterance', text: 'open youtube', source: 'chat' });
+    await s.o.handle({ v: 1, type: 'open_url_result', requestId: 'n1', ok: true, opened: 'YouTube in Chrome' });
+    expect(s.says().at(-1)).toMatchObject({ kind: 'reply', text: 'Opening YouTube in Chrome…' });
+  });
+
+  it('falls back to the site label when the result carries no opened detail', async () => {
+    const s = setup();
+    await s.o.handle({ v: 1, type: 'utterance', text: 'open youtube', source: 'chat' });
+    await s.o.handle({ v: 1, type: 'open_url_result', requestId: 'n1', ok: true });
+    expect(s.says().at(-1)).toMatchObject({ kind: 'reply', text: 'Opening YouTube…' });
+  });
+
+  it('reports a miss honestly when the body could not open it', async () => {
+    const s = setup();
+    await s.o.handle({ v: 1, type: 'utterance', text: 'open youtube', source: 'chat' });
+    await s.o.handle({ v: 1, type: 'open_url_result', requestId: 'n1', ok: false, error: 'no default browser found' });
+    expect(s.says().at(-1)).toMatchObject({ kind: 'reply', text: "I couldn't open YouTube." });
+  });
+
+  it('ignores an open_url_result whose requestId does not match the pending open', async () => {
+    const s = setup();
+    await s.o.handle({ v: 1, type: 'utterance', text: 'open youtube', source: 'chat' });
+    await s.o.handle({ v: 1, type: 'open_url_result', requestId: 'stale', ok: true });
+    expect(s.says()).toHaveLength(0);
+  });
+
+  it('says it did not open after 5s with no result', async () => {
+    const s = setup();
+    await s.o.handle({ v: 1, type: 'utterance', text: 'open youtube', source: 'chat' });
+    s.advance(5000);
+    await s.o.pulse();
+    expect(s.says().at(-1)).toMatchObject({ kind: 'reply', text: "That didn't open." });
+    await s.o.handle({ v: 1, type: 'open_url_result', requestId: 'n1', ok: true });
+    expect(s.says()).toHaveLength(1); // the late result is ignored: pending was already cleared
+  });
+});
+
+describe('model-proposed actions', () => {
+  const utter = (text: string) => ({ v: 1 as const, type: 'utterance' as const, text, source: 'chat' as const });
+
+  it('executes a model-proposed url action without double-recording the user turn (chat.reply already did)', async () => {
+    const s = setup();
+    s.reply.mockResolvedValue({ text: 'On it.', draft: null, action: { open: 'url', url: 'https://www.youtube.com/results?search_query=dp', label: 'dp on YouTube' } });
+    const text = 'can you help me find a dp video';
+    await s.o.handle(utter(text));
+    expect(s.sent.filter((m) => m.type === 'open_url')).toEqual([
+      { v: 1, type: 'open_url', requestId: 'n2', url: 'https://www.youtube.com/results?search_query=dp' },
+    ]);
+    // chat.reply() is mocked here (its own memory recording is covered by chat.test.ts); this only proves
+    // the orchestrator itself doesn't ALSO record the turn when executing a model action.
+    expect(s.memory.recentTurns(5)).toEqual([]);
+    await s.o.handle({ v: 1, type: 'open_url_result', requestId: 'n2', ok: true });
+    expect(s.says().at(-1)).toMatchObject({ kind: 'reply', text: 'Opening dp on YouTube…' });
+  });
+
+  it('executes a model-proposed app action via the same focus flow as a parsed command', async () => {
+    const s = setup();
+    s.reply.mockResolvedValue({ text: 'Bringing up Arc.', draft: null, action: { open: 'app', target: 'Arc' } });
+    await s.o.handle(utter('can you get Arc going'));
+    expect(s.sent.filter((m) => m.type === 'focus')).toEqual([{ v: 1, type: 'focus', requestId: 'n2', target: 'Arc', kind: 'app' }]);
+    await s.o.handle({ v: 1, type: 'focus_result', requestId: 'n2', ok: true, matched: 'Arc' });
+    expect(s.says().at(-1)).toMatchObject({ kind: 'reply', text: 'Switched to Arc.' });
+  });
+
+  it('sends no reply bubble when the model line was dropped (empty text) alongside a pending action', async () => {
+    const s = setup();
+    s.reply.mockResolvedValue({ text: '', draft: null, action: { open: 'app', target: 'Arc' } });
+    await s.o.handle(utter('can you get Arc going'));
+    expect(s.says()).toHaveLength(0);
+    expect(s.sent.filter((m) => m.type === 'focus')).toHaveLength(1);
+  });
+
+  it('does nothing extra when the reply carries no action', async () => {
+    const s = setup();
+    s.reply.mockResolvedValue({ text: 'An answer.', draft: null });
+    await s.o.handle(utter('what is this'));
+    expect(s.sent.filter((m) => m.type === 'focus' || m.type === 'open_url')).toHaveLength(0);
+  });
+});
+
 describe('following through on focus offers', () => {
   const offer: NudgeDecision = { speak: true, kind: 'suggestion', text: "You missed the pulse mcp request in Prince's DM. Want me to bring the Slack window to the front?", chips: [], pointAt: null };
   const utter = (text: string) => ({ v: 1 as const, type: 'utterance' as const, text, source: 'chat' as const });

@@ -23,7 +23,8 @@ export function detectFocusOffer(text: string): string | null {
     const verb = sentence.match(GO_TO) ?? sentence.match(VERB_WITH_PLACE);
     if (!verb) continue;
     const name = firstName(sentence.slice(verb.index! + verb[0].length));
-    const target = name ? parseCommand(`go to ${name}`)?.target : undefined;
+    const cmd = name ? parseCommand(`go to ${name}`) : null;
+    const target = cmd?.type === 'focus' ? cmd.target : undefined;
     if (target) return target;
   }
   return null;

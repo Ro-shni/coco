@@ -176,11 +176,16 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         case .mood(let payload):
             overlay.setMood(payload.mood)
         case .focus(let f):
-            let matched = WindowFocus.focus(target: f.target, kind: f.kind)
-            brain.send(.focusResult(FocusResultPayload(requestId: f.requestId, ok: matched != nil, matched: matched)))
+            WindowFocus.focus(target: f.target, kind: f.kind) { [weak self] matched in
+                self?.brain.send(.focusResult(FocusResultPayload(requestId: f.requestId, ok: matched != nil, matched: matched)))
+            }
         case .paste(let p):
             Paster.paste(text: p.text, intoApp: p.app) { [weak self] ok, detail in
                 self?.brain.send(.pasteResult(PasteResultPayload(requestId: p.requestId, ok: ok, detail: detail)))
+            }
+        case .openUrl(let o):
+            URLOpener.open(url: o.url, browser: o.browser) { [weak self] ok, opened, error in
+                self?.brain.send(.openUrlResult(OpenUrlResultPayload(requestId: o.requestId, ok: ok, opened: opened, error: error)))
             }
         }
     }

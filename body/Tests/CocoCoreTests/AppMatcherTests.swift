@@ -1,3 +1,4 @@
+import Foundation
 import Testing
 @testable import CocoCore
 
@@ -77,5 +78,27 @@ import Testing
             WindowCandidate(appName: "A", pid: 1, title: "release", index: 1),
         ]
         #expect(AppMatcher.bestWindow(for: "release", in: candidates)?.title == "release")
+    }
+
+    let installedApps = [
+        InstalledAppCandidate(name: "Arc", bundleId: "company.thebrowser.Browser", url: URL(fileURLWithPath: "/Applications/Arc.app")),
+        InstalledAppCandidate(name: "Slack", bundleId: "com.tinyspeck.slackmacgap", url: URL(fileURLWithPath: "/Applications/Slack.app")),
+        InstalledAppCandidate(name: "Visual Studio Code", bundleId: "com.microsoft.VSCode", url: URL(fileURLWithPath: "/Applications/Visual Studio Code.app")),
+    ]
+
+    @Test func bestInstalledAppExactNameMatch() {
+        #expect(AppMatcher.bestInstalledApp(for: "arc", in: installedApps)?.name == "Arc")
+    }
+
+    @Test func bestInstalledAppMatchesAlias() {
+        #expect(AppMatcher.bestInstalledApp(for: "vscode", in: installedApps)?.name == "Visual Studio Code")
+    }
+
+    @Test func bestInstalledAppReturnsUrlForLaunching() {
+        #expect(AppMatcher.bestInstalledApp(for: "slack", in: installedApps)?.url == URL(fileURLWithPath: "/Applications/Slack.app"))
+    }
+
+    @Test func bestInstalledAppNoMatchReturnsNil() {
+        #expect(AppMatcher.bestInstalledApp(for: "figma", in: installedApps) == nil)
     }
 }

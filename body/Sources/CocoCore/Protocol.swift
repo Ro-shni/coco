@@ -130,6 +130,25 @@ public struct PasteResultPayload: Codable, Equatable, Sendable {
     }
 }
 
+public struct OpenUrlPayload: Codable, Equatable, Sendable {
+    public var requestId: String
+    public var url: String
+    public var browser: String?
+    public init(requestId: String, url: String, browser: String? = nil) {
+        self.requestId = requestId; self.url = url; self.browser = browser
+    }
+}
+
+public struct OpenUrlResultPayload: Codable, Equatable, Sendable {
+    public var requestId: String
+    public var ok: Bool
+    public var opened: String?
+    public var error: String?
+    public init(requestId: String, ok: Bool, opened: String? = nil, error: String? = nil) {
+        self.requestId = requestId; self.ok = ok; self.opened = opened; self.error = error
+    }
+}
+
 private enum EnvelopeKeys: String, CodingKey { case v, type }
 
 private func decodeEnvelope(_ decoder: Decoder) throws -> (KeyedDecodingContainer<EnvelopeKeys>, String) {
@@ -155,6 +174,7 @@ public enum BodyToBrain: Codable, Equatable, Sendable {
     case chip(ChipPayload)
     case focusResult(FocusResultPayload)
     case pasteResult(PasteResultPayload)
+    case openUrlResult(OpenUrlResultPayload)
 
     public init(from decoder: Decoder) throws {
         let (c, type) = try decodeEnvelope(decoder)
@@ -166,6 +186,7 @@ public enum BodyToBrain: Codable, Equatable, Sendable {
         case "chip": self = .chip(try ChipPayload(from: decoder))
         case "focus_result": self = .focusResult(try FocusResultPayload(from: decoder))
         case "paste_result": self = .pasteResult(try PasteResultPayload(from: decoder))
+        case "open_url_result": self = .openUrlResult(try OpenUrlResultPayload(from: decoder))
         default: throw DecodingError.dataCorruptedError(forKey: .type, in: c, debugDescription: "unknown type \(type)")
         }
     }
@@ -179,6 +200,7 @@ public enum BodyToBrain: Codable, Equatable, Sendable {
         case .chip(let p): try encodeEnvelope(encoder, type: "chip"); try p.encode(to: encoder)
         case .focusResult(let p): try encodeEnvelope(encoder, type: "focus_result"); try p.encode(to: encoder)
         case .pasteResult(let p): try encodeEnvelope(encoder, type: "paste_result"); try p.encode(to: encoder)
+        case .openUrlResult(let p): try encodeEnvelope(encoder, type: "open_url_result"); try p.encode(to: encoder)
         }
     }
 }
@@ -189,6 +211,7 @@ public enum BrainToBody: Codable, Equatable, Sendable {
     case mood(MoodPayload)
     case focus(FocusPayload)
     case paste(PastePayload)
+    case openUrl(OpenUrlPayload)
 
     public init(from decoder: Decoder) throws {
         let (c, type) = try decodeEnvelope(decoder)
@@ -198,6 +221,7 @@ public enum BrainToBody: Codable, Equatable, Sendable {
         case "mood": self = .mood(try MoodPayload(from: decoder))
         case "focus": self = .focus(try FocusPayload(from: decoder))
         case "paste": self = .paste(try PastePayload(from: decoder))
+        case "open_url": self = .openUrl(try OpenUrlPayload(from: decoder))
         default: throw DecodingError.dataCorruptedError(forKey: .type, in: c, debugDescription: "unknown type \(type)")
         }
     }
@@ -209,6 +233,7 @@ public enum BrainToBody: Codable, Equatable, Sendable {
         case .mood(let p): try encodeEnvelope(encoder, type: "mood"); try p.encode(to: encoder)
         case .focus(let p): try encodeEnvelope(encoder, type: "focus"); try p.encode(to: encoder)
         case .paste(let p): try encodeEnvelope(encoder, type: "paste"); try p.encode(to: encoder)
+        case .openUrl(let p): try encodeEnvelope(encoder, type: "open_url"); try p.encode(to: encoder)
         }
     }
 }

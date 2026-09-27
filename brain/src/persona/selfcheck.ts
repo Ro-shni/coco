@@ -14,7 +14,7 @@ export const FILLER_PATTERNS: readonly RegExp[] = [
 const EMOJI = /\p{Extended_Pictographic}/u;
 
 const COMPLETION_VERB =
-  "sent|posted|replied|messaged|emailed|dm'?e?d|approved|merged|deployed|scheduled|submitted|clicked|typed|pressed|shared|forwarded|pinged|notified|delivered|created (?:a|the) (?:pr|ticket|issue)|opened (?:a|the) (?:pr|ticket)";
+  "sent|posted|replied|messaged|emailed|dm'?e?d|approved|merged|deployed|scheduled|submitted|clicked|typed|pressed|shared|forwarded|pinged|notified|delivered|created (?:a|the) (?:pr|ticket|issue)|opened|launched";
 const ADVERB = '(?:just|already|also|now|ok(?:ay)?|alright|all right|great|and|so|yep|done)';
 const LEAD = `(?:${ADVERB}[,!]?\\s+)*`;
 /** Things Coco might claim to have sent: "it", "that", "all", "your message", "the reply"... */

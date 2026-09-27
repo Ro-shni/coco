@@ -55,6 +55,10 @@ describe('claimsUnperformedAction', () => {
     ["I've posted it in #incidents.", "I've posted"],
     ['Okay, I just merged the PR.', 'I just merged'],
     ['I created a PR for that.', 'I created a PR'],
+    ['I opened Arc for you.', 'I opened'],
+    ['I launched Chrome.', 'I launched'],
+    ['Opened.', 'Opened'],
+    ['Launched, one sec.', 'Launched'],
   ])('flags a completed outward action: %s', (text, phrase) => {
     expect(claimsUnperformedAction(text)).toBe(phrase);
   });
@@ -69,6 +73,8 @@ describe('claimsUnperformedAction', () => {
     'He posted the runbook at 10:40.',
     'Done with the review?',
     'p99 jumped at 10:40. Want me to bring Grafana to the front?',
+    'The file opened automatically.',
+    'The PR was opened by CI.',
   ])('does not flag: %s', (text) => {
     expect(claimsUnperformedAction(text)).toBeNull();
   });

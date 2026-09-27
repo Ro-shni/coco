@@ -9,6 +9,17 @@ public struct AppCandidate: Equatable, Sendable {
     }
 }
 
+/// An app found on disk (not necessarily running), e.g. from scanning /Applications. Pure data: no pid,
+/// since launching doesn't need one — just the bundle's URL.
+public struct InstalledAppCandidate: Equatable, Sendable {
+    public var name: String
+    public var bundleId: String
+    public var url: URL
+    public init(name: String, bundleId: String, url: URL) {
+        self.name = name; self.bundleId = bundleId; self.url = url
+    }
+}
+
 public struct WindowCandidate: Equatable, Sendable {
     public var appName: String
     public var pid: Int32
@@ -37,16 +48,30 @@ public enum AppMatcher {
     ]
 
     public static func bestApp(for query: String, in apps: [AppCandidate]) -> AppCandidate? {
+        bestByNameAndBundle(query: query, candidates: apps, name: \.name, bundleId: \.bundleId)
+    }
+
+    /// Same matching logic as `bestApp`, over apps found on disk rather than running processes.
+    public static func bestInstalledApp(for query: String, in apps: [InstalledAppCandidate]) -> InstalledAppCandidate? {
+        bestByNameAndBundle(query: query, candidates: apps, name: \.name, bundleId: \.bundleId)
+    }
+
+    private static func bestByNameAndBundle<Candidate>(
+        query: String,
+        candidates: [Candidate],
+        name: (Candidate) -> String,
+        bundleId: (Candidate) -> String
+    ) -> Candidate? {
         let normalisedQuery = normalise(query)
         guard !normalisedQuery.isEmpty else { return nil }
         let canonicalForms = aliases[normalisedQuery]
-        var best: (candidate: AppCandidate, score: Double)?
-        for candidate in apps {
-            let score = appScore(candidate: candidate, normalisedQuery: normalisedQuery, canonicalForms: canonicalForms)
+        var best: (candidate: Candidate, score: Double)?
+        for candidate in candidates {
+            let score = nameBundleScore(name: name(candidate), bundleId: bundleId(candidate), normalisedQuery: normalisedQuery, canonicalForms: canonicalForms)
             guard score >= appThreshold else { continue }
             if let current = best {
                 if score < current.score { continue }
-                if score == current.score && candidate.name.count >= current.candidate.name.count { continue }
+                if score == current.score && name(candidate).count >= name(current.candidate).count { continue }
             }
             best = (candidate, score)
         }
@@ -71,9 +96,9 @@ public enum AppMatcher {
         return best?.candidate
     }
 
-    private static func appScore(candidate: AppCandidate, normalisedQuery: String, canonicalForms: [String]?) -> Double {
-        let normalisedName = normalise(candidate.name)
-        guard !normalisedName.isEmpty else { return bundleScore(candidate: candidate, normalisedQuery: normalisedQuery) }
+    private static func nameBundleScore(name: String, bundleId: String, normalisedQuery: String, canonicalForms: [String]?) -> Double {
+        let normalisedName = normalise(name)
+        guard !normalisedName.isEmpty else { return bundleScore(bundleId: bundleId, normalisedQuery: normalisedQuery) }
         if normalisedName == normalisedQuery { return 1.0 }
         if let canonicalForms, canonicalForms.contains(normalisedName) { return 1.0 }
         if normalisedName.hasPrefix(normalisedQuery) { return 0.9 }
@@ -81,11 +106,11 @@ public enum AppMatcher {
         if shortestLength >= 3 && (normalisedName.contains(normalisedQuery) || normalisedQuery.contains(normalisedName)) {
             return 0.8
         }
-        return bundleScore(candidate: candidate, normalisedQuery: normalisedQuery)
+        return bundleScore(bundleId: bundleId, normalisedQuery: normalisedQuery)
     }
 
-    private static func bundleScore(candidate: AppCandidate, normalisedQuery: String) -> Double {
-        let normalisedBundle = normalise(candidate.bundleId)
+    private static func bundleScore(bundleId: String, normalisedQuery: String) -> Double {
+        let normalisedBundle = normalise(bundleId)
         return !normalisedBundle.isEmpty && normalisedBundle.contains(normalisedQuery) ? 0.7 : 0
     }
 

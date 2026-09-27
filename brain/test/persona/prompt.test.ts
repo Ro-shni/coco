@@ -51,7 +51,7 @@ describe('buildNudgeMessages', () => {
   it('limits offers to things Coco can actually do, including in the examples', () => {
     const [system] = buildNudgeMessages(input);
     expect(system!.content).toContain(
-      "- Only offer things you can actually do: explain what's on screen, draft text in chat for the user to paste, or bring an app/window to the front. Never offer to send, post, reply, approve, merge, click, type, run, or open links.",
+      "- Only offer things you can actually do: explain what's on screen, draft text in chat for the user to paste, bring an app/window to the front (launching it if it isn't running), or open a website. Never offer to send, post, reply, approve, merge, click, or type.",
     );
     expect(system!.content).not.toContain('line it up');
   });

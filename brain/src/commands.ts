@@ -1,4 +1,6 @@
-export type Command = { type: 'focus'; target: string; kind: 'app' | 'window' };
+import { parseSiteCommand, type SiteCommand } from './sites.js';
+
+export type Command = { type: 'focus'; target: string; kind: 'app' | 'window' } | SiteCommand;
 
 const PREFIXES = ['hey ', 'coco,', 'coco:', 'coco', 'can you ', 'could you ', 'please '];
 const VERBS = [
@@ -46,6 +48,11 @@ export function parseCommand(text: string): Command | null {
   if (raw.includes('?') && !raw.endsWith('?')) return null;
 
   const s = stripPrefixes(stripTrailing(raw).toLowerCase(), PREFIXES);
+
+  // Known site names ("open youtube", "search X on github") resolve to a website, taking precedence over
+  // app focus — there's no YouTube app on macOS, and "open gmail" means the website too.
+  const site = parseSiteCommand(s);
+  if (site) return site;
 
   const verb = VERBS.find((v) => s === v || s.startsWith(`${v} `));
   if (!verb) return null;

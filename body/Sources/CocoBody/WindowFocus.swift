@@ -3,16 +3,33 @@ import ApplicationServices
 import CocoCore
 
 enum WindowFocus {
-    /// Finds the best-matching running app or window and brings it to the front. Returns the display name that
-    /// was activated, or nil if nothing matched. Must run on main: it drives AppKit/AX APIs synchronously.
-    static func focus(target: String, kind: FocusKind) -> String? {
+    /// Where to search for installed-but-not-running apps: one level of *.app inside each of these, plus one
+    /// nested folder level (e.g. /Applications/Adobe/Something.app).
+    private static var searchRoots: [URL] {
+        [
+            URL(fileURLWithPath: "/Applications"),
+            URL(fileURLWithPath: "/Applications/Utilities"),
+            URL(fileURLWithPath: "/System/Applications"),
+            URL(fileURLWithPath: "/System/Applications/Utilities"),
+            FileManager.default.homeDirectoryForCurrentUser.appendingPathComponent("Applications"),
+        ]
+    }
+
+    /// Finds the best-matching running app or window and brings it to the front; for kind `.app` with no
+    /// running/window match, falls back to launching an installed app. Calls `completion` with the display
+    /// name that was activated/launched (e.g. "Arc (launched)"), or nil if nothing matched. Must run on
+    /// main: it drives AppKit/AX APIs synchronously; `completion` is also delivered on main.
+    static func focus(target: String, kind: FocusKind, completion: @escaping (String?) -> Void) {
         dispatchPrecondition(condition: .onQueue(.main))
         let apps = candidateApps()
         switch kind {
         case .app:
-            return focusApp(target: target, apps: apps) ?? focusWindow(target: target, apps: apps)
+            if let matched = focusApp(target: target, apps: apps) { return completion(matched) }
+            if let matched = focusWindow(target: target, apps: apps) { return completion(matched) }
+            launchInstalledApp(target: target, completion: completion)
         case .window:
-            return focusWindow(target: target, apps: apps) ?? focusApp(target: target, apps: apps)
+            if let matched = focusWindow(target: target, apps: apps) { return completion(matched) }
+            completion(focusApp(target: target, apps: apps))
         }
     }
 
@@ -21,6 +38,52 @@ enum WindowFocus {
     static func candidateApps() -> [NSRunningApplication] {
         NSWorkspace.shared.runningApplications.filter {
             $0.activationPolicy == .regular && $0.bundleIdentifier != Bundle.main.bundleIdentifier
+        }
+    }
+
+    /// Apps found on disk (not necessarily running), for launching and for browser resolution (URLOpener).
+    /// Scans each search root's *.app entries plus one nested folder level.
+    static func installedAppCandidates() -> [InstalledAppCandidate] {
+        let fm = FileManager.default
+        var seenPaths = Set<String>()
+        var result: [InstalledAppCandidate] = []
+        func add(_ appURL: URL) {
+            guard appURL.pathExtension == "app", seenPaths.insert(appURL.path).inserted else { return }
+            if let candidate = installedAppCandidate(at: appURL) { result.append(candidate) }
+        }
+        for root in searchRoots {
+            guard let entries = try? fm.contentsOfDirectory(at: root, includingPropertiesForKeys: [.isDirectoryKey]) else { continue }
+            for entry in entries {
+                if entry.pathExtension == "app" {
+                    add(entry)
+                } else if (try? entry.resourceValues(forKeys: [.isDirectoryKey]))?.isDirectory == true {
+                    let nested = (try? fm.contentsOfDirectory(at: entry, includingPropertiesForKeys: nil)) ?? []
+                    for nestedEntry in nested { add(nestedEntry) }
+                }
+            }
+        }
+        return result
+    }
+
+    private static func installedAppCandidate(at appURL: URL) -> InstalledAppCandidate? {
+        guard let bundle = Bundle(url: appURL) else { return nil }
+        let name = (bundle.infoDictionary?["CFBundleDisplayName"] as? String)
+            ?? (bundle.infoDictionary?["CFBundleName"] as? String)
+            ?? appURL.deletingPathExtension().lastPathComponent
+        return InstalledAppCandidate(name: name, bundleId: bundle.bundleIdentifier ?? "", url: appURL)
+    }
+
+    private static func launchInstalledApp(target: String, completion: @escaping (String?) -> Void) {
+        guard let best = AppMatcher.bestInstalledApp(for: target, in: installedAppCandidates()) else {
+            completion(nil)
+            return
+        }
+        let configuration = NSWorkspace.OpenConfiguration()
+        configuration.activates = true
+        NSWorkspace.shared.openApplication(at: best.url, configuration: configuration) { _, error in
+            DispatchQueue.main.async {
+                completion(error == nil ? "\(best.name) (launched)" : nil)
+            }
         }
     }
 
