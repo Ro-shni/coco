@@ -33,6 +33,19 @@ function stripPrefixes(text: string, prefixes: readonly string[]): string {
   }
 }
 
+/** Same as `stripPrefixes`, but matches case-insensitively while preserving the original text's casing in
+ * what's returned (M3: a URL path like "github.com/Ro-shni/Coco" must not be lowercased). Safe because
+ * every prefix in PREFIXES is plain ASCII, so lowercasing never changes its length. */
+function stripPrefixesPreservingCase(text: string, prefixes: readonly string[]): string {
+  let s = text;
+  for (;;) {
+    const lower = s.toLowerCase();
+    const hit = prefixes.find((p) => lower.startsWith(p));
+    if (!hit) return s;
+    s = s.slice(hit.length).replace(/^\s+/, '');
+  }
+}
+
 /** Strips a trailing "please" and trailing .!? punctuation, in either order. */
 function stripTrailing(text: string): string {
   let out = text.trimEnd();
@@ -47,11 +60,14 @@ export function parseCommand(text: string): Command | null {
   const raw = text.trim();
   if (raw.includes('?') && !raw.endsWith('?')) return null;
 
-  const s = stripPrefixes(stripTrailing(raw).toLowerCase(), PREFIXES);
+  const trailingStripped = stripTrailing(raw);
+  const s = stripPrefixes(trailingStripped.toLowerCase(), PREFIXES);
 
   // Known site names ("open youtube", "search X on github") resolve to a website, taking precedence over
-  // app focus — there's no YouTube app on macOS, and "open gmail" means the website too.
-  const site = parseSiteCommand(s);
+  // app focus — there's no YouTube app on macOS, and "open gmail" means the website too. Case is preserved
+  // here (M3) so an explicit URL path (e.g. "github.com/Ro-shni/Coco") isn't lowercased; site names and
+  // search phrasing are matched case-insensitively inside parseSiteCommand regardless.
+  const site = parseSiteCommand(stripPrefixesPreservingCase(trailingStripped, PREFIXES));
   if (site) return site;
 
   const verb = VERBS.find((v) => s === v || s.startsWith(`${v} `));

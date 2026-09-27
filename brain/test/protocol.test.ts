@@ -50,4 +50,19 @@ describe('encodeBrainMessage', () => {
     // @ts-expect-error deliberately invalid mood
     expect(() => encodeBrainMessage({ v: 1, type: 'mood', mood: 'ecstatic' })).toThrow();
   });
+
+  it('rejects an open_url message whose url is not http/https, at the protocol layer', () => {
+    expect(() => encodeBrainMessage({ v: 1, type: 'open_url', requestId: 'o-1', url: 'javascript:alert(1)' })).toThrow();
+    expect(() => encodeBrainMessage({ v: 1, type: 'open_url', requestId: 'o-1', url: 'file:///etc/passwd' })).toThrow();
+    expect(() => encodeBrainMessage({ v: 1, type: 'open_url', requestId: 'o-1', url: 'not a url' })).toThrow();
+  });
+
+  it('rejects an open_url message whose url is longer than 2048 chars', () => {
+    const url = `https://example.com/${'a'.repeat(2048)}`;
+    expect(() => encodeBrainMessage({ v: 1, type: 'open_url', requestId: 'o-1', url })).toThrow();
+  });
+
+  it('accepts a well-formed open_url message', () => {
+    expect(() => encodeBrainMessage({ v: 1, type: 'open_url', requestId: 'o-1', url: 'https://www.youtube.com' })).not.toThrow();
+  });
 });

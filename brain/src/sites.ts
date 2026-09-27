@@ -27,12 +27,25 @@ const SEARCH_TEMPLATES: Readonly<Record<string, (query: string) => string>> = {
   google: (q) => `https://www.google.com/search?q=${encodeURIComponent(q)}`,
   github: (q) => `https://github.com/search?q=${encodeURIComponent(q)}`,
 };
+/** The exact URL *prefix* each search template produces (before the query), so `isKnownSiteResult` can
+ * recognise "our own" search-result URLs without re-deriving the query. */
+const SEARCH_PREFIXES: readonly string[] = [
+  'https://www.youtube.com/results?search_query=',
+  'https://www.google.com/search?q=',
+  'https://github.com/search?q=',
+];
 
 const BROWSERS = ['chrome', 'safari', 'arc', 'firefox', 'brave', 'edge'] as const;
 const BROWSER_SUFFIX = new RegExp(`\\s+in\\s+(${BROWSERS.join('|')})$`, 'i');
 
 /** A bare domain, optionally with a path, e.g. "github.com" or "github.com/foo/bar". No spaces, needs a dot. */
 const DOMAIN = /^[a-z0-9]([a-z0-9-]*[a-z0-9])?(?:\.[a-z0-9]([a-z0-9-]*[a-z0-9])?)+(?:\/\S*)?$/i;
+/** An explicit http(s) URL the user typed verbatim, e.g. "open https://example.org/path". */
+const EXPLICIT_URL = /^https?:\/\//i;
+/** M2: a bare dotted target ("readme.md", "zoom.us") is only treated as a website when its TLD is one of
+ * these — otherwise it's far more likely a filename or an app name (the Zoom app is literally "zoom.us")
+ * and is left for app-focus/launch to handle instead. An explicit scheme (`EXPLICIT_URL`) always wins. */
+const WEBSITE_TLDS = new Set(['com', 'org', 'net', 'io', 'dev', 'in', 'co', 'ai', 'app', 'gov', 'edu']);
 
 const SEARCH_FOR = /^search\s+([a-z][a-z0-9]*)\s+for\s+(.+)$/i;
 const OPEN_AND_SEARCH = /^open\s+([a-z][a-z0-9]*)\s+and\s+search\s+(.+)$/i;
@@ -92,8 +105,29 @@ function matchCommand(s: string): SiteCommand | null {
     const site = target.toLowerCase();
     const knownUrl = KNOWN_SITES[site];
     if (knownUrl) return { type: 'open_url', url: knownUrl, label: siteLabel(site) };
-    if (DOMAIN.test(target)) return { type: 'open_url', url: `https://${target}`, label: target };
+    const url = websiteUrl(target);
+    if (url) return { type: 'open_url', url, label: target };
   }
 
   return null;
+}
+
+/** Resolves a domain-shaped target to a URL, or null when it should be left for app-focus/launch instead
+ * (M2: a bare dotted name is a website only with an explicit scheme or an allowlisted TLD). */
+function websiteUrl(target: string): string | null {
+  if (EXPLICIT_URL.test(target)) return target;
+  if (!DOMAIN.test(target)) return null;
+  const host = target.split('/')[0]!;
+  const tld = host.split('.').pop()?.toLowerCase();
+  return tld && WEBSITE_TLDS.has(tld) ? `https://${target}` : null;
+}
+
+/**
+ * True when `url` is exactly a known site's homepage, or matches the shape of one of our own search
+ * templates' output (same prefix). Used to decide whether a MODEL-proposed url action is safe to open
+ * automatically, or should be confirmed first (M7) — an arbitrary URL on a known host that isn't one of
+ * these two shapes (e.g. a specific YouTube video) does not qualify.
+ */
+export function isKnownSiteResult(url: string): boolean {
+  return Object.values(KNOWN_SITES).includes(url) || SEARCH_PREFIXES.some((prefix) => url.startsWith(prefix));
 }

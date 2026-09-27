@@ -12,7 +12,7 @@ import { ModelRequestError, ModelUnavailableError, PRIORITY } from '../src/model
 import { NudgePolicy } from '../src/nudge/policy.js';
 import { Orchestrator, type OrchestratorDeps } from '../src/orchestrator.js';
 import type { NudgeDecision } from '../src/persona/decision.js';
-import type { ActivityState, BrainToBody, PasteMsg, SayMsg } from '../src/protocol.js';
+import { encodeBrainMessage, type ActivityState, type BrainToBody, type PasteMsg, type SayMsg } from '../src/protocol.js';
 import { T0, ctx } from './helpers/messages.js';
 
 const decision: NudgeDecision = { speak: true, kind: 'suggestion', text: 'p99 jumped at 10:40. Check the 10:38 deploy?', chips: ['check deploys'], pointAt: '10:40' };
@@ -29,7 +29,13 @@ function setup(overrides: Partial<OrchestratorDeps> = {}, memory = new Memory(':
   const health = vi.fn<() => Promise<boolean>>().mockResolvedValue(true);
   const policy = new NudgePolicy({ minGapMs: 180_000 });
   const deps: OrchestratorDeps = {
-    send: (m) => sent.push(m),
+    // Validates against the protocol schema before recording, like server.ts's real send (via
+    // encodeBrainMessage) — so a message that would actually fail to reach the body (M4: e.g. an overlong
+    // url) throws here too, exercising the same code path startFocus/startOpenUrl guard against.
+    send: (m) => {
+      encodeBrainMessage(m);
+      sent.push(m);
+    },
     clock: () => now,
     newId: () => `n${++ids}`,
     config: { ...DEFAULT_CONFIG, user: { name: 'Roshni', handles: ['roshni'] } },
@@ -219,6 +225,14 @@ describe('engagement', () => {
     expect(s.memory.nudgeOutcome('n1')).toBe('engaged');
     expect(s.reply.mock.calls[0]![0]).toBe(`I clicked "check deploys" on what you said: "${decision.text}"`);
     expect(s.says().at(-1)).toMatchObject({ kind: 'reply', text: 'An answer.', chips: [] });
+  });
+
+  it('C1: a chip click never carries an intentText, even though the composed prompt quotes the model-authored nudge text', async () => {
+    const s = setup();
+    await s.o.handle(runbook);
+    await s.o.tick();
+    await s.o.handle({ v: 1, type: 'chip', nudgeId: 'n1', choice: 'check deploys' });
+    expect(s.reply.mock.calls[0]![1].intentText).toBeUndefined();
   });
 
   it('treats dismiss as ignored', async () => {
@@ -520,10 +534,10 @@ describe('focus commands', () => {
     expect(s.says()).toHaveLength(0);
   });
 
-  it('says the switch did not go through after 5s with no result', async () => {
+  it('says the switch did not go through after 20s with no result (I5: long enough for a cold launch)', async () => {
     const s = setup();
     await s.o.handle({ v: 1, type: 'utterance', text: 'go to slack', source: 'chat' });
-    s.advance(5000);
+    s.advance(20_000);
     await s.o.pulse();
     expect(s.says().at(-1)).toMatchObject({ kind: 'reply', text: "That switch didn't go through." });
     await s.o.handle({ v: 1, type: 'focus_result', requestId: 'n1', ok: true, matched: 'Slack' });
@@ -559,11 +573,14 @@ describe('open url commands', () => {
     ]);
   });
 
-  it('says "Opening X…" once the body confirms it opened', async () => {
+  it('says "Opening <label> in <browser>…" once the body confirms it opened, using a browser name the body can actually produce', async () => {
     const s = setup();
     await s.o.handle({ v: 1, type: 'utterance', text: 'open youtube', source: 'chat' });
-    await s.o.handle({ v: 1, type: 'open_url_result', requestId: 'n1', ok: true, opened: 'YouTube in Chrome' });
-    expect(s.says().at(-1)).toMatchObject({ kind: 'reply', text: 'Opening YouTube in Chrome…' });
+    // I3: `opened` is just the resolved browser's own display name (from NSWorkspace) — the body has no way
+    // to know the site's label, so it can never itself produce "YouTube in Chrome"; the label comes from
+    // the brain's own pending-open state, combined with the body's browser name here.
+    await s.o.handle({ v: 1, type: 'open_url_result', requestId: 'n1', ok: true, opened: 'Google Chrome' });
+    expect(s.says().at(-1)).toMatchObject({ kind: 'reply', text: 'Opening YouTube in Google Chrome…' });
   });
 
   it('falls back to the site label when the result carries no opened detail', async () => {
@@ -587,14 +604,27 @@ describe('open url commands', () => {
     expect(s.says()).toHaveLength(0);
   });
 
-  it('says it did not open after 5s with no result', async () => {
+  it('says it did not open after 20s with no result (I5: long enough for a cold launch)', async () => {
     const s = setup();
     await s.o.handle({ v: 1, type: 'utterance', text: 'open youtube', source: 'chat' });
-    s.advance(5000);
+    s.advance(20_000);
     await s.o.pulse();
     expect(s.says().at(-1)).toMatchObject({ kind: 'reply', text: "That didn't open." });
     await s.o.handle({ v: 1, type: 'open_url_result', requestId: 'n1', ok: true });
     expect(s.says()).toHaveLength(1); // the late result is ignored: pending was already cleared
+  });
+
+  it('M4: an overlong search query (url over 2048 chars) does not leave a dangling pendingOpen — it fails immediately, honestly, with no later false timeout', async () => {
+    const s = setup();
+    const longQuery = 'a'.repeat(2500);
+    await s.o.handle({ v: 1, type: 'utterance', text: `search ${longQuery} on youtube`, source: 'chat' });
+    expect(s.sent.filter((m) => m.type === 'open_url')).toHaveLength(0); // never actually sent — validation failed first
+    expect(s.says()).toHaveLength(1);
+    expect(s.says()[0]!.text).not.toMatch(/^Opening/);
+    // Pending state was never set, so advancing past the timeout produces no further, spuriously-timed say.
+    s.advance(20_000);
+    await s.o.pulse();
+    expect(s.says()).toHaveLength(1);
   });
 });
 
@@ -638,6 +668,101 @@ describe('model-proposed actions', () => {
     s.reply.mockResolvedValue({ text: 'An answer.', draft: null });
     await s.o.handle(utter('what is this'));
     expect(s.sent.filter((m) => m.type === 'focus' || m.type === 'open_url')).toHaveLength(0);
+  });
+
+  describe('M7: a model-chosen url that is not a known-site result is confirmed first', () => {
+    const specificVideo = { open: 'url' as const, url: 'https://www.youtube.com/watch?v=xyz', label: 'Aditya Verma DP playlist' };
+
+    it('does not auto-open; sends the reply with "Open <host>"/"dismiss" chips instead', async () => {
+      const s = setup();
+      s.reply.mockResolvedValue({ text: 'Found it.', draft: null, action: specificVideo });
+      await s.o.handle(utter('open that dp playlist'));
+      expect(s.sent.filter((m) => m.type === 'open_url' || m.type === 'focus')).toHaveLength(0);
+      expect(s.says().at(-1)).toMatchObject({ kind: 'reply', text: 'Found it.', chips: ['Open www.youtube.com', 'dismiss'] });
+    });
+
+    it('uses a fallback question when the model line was dropped (empty text) alongside the pending confirm', async () => {
+      const s = setup();
+      s.reply.mockResolvedValue({ text: '', draft: null, action: specificVideo });
+      await s.o.handle(utter('open that dp playlist'));
+      expect(s.says().at(-1)).toMatchObject({ text: 'Want me to open Aditya Verma DP playlist?', chips: ['Open www.youtube.com', 'dismiss'] });
+    });
+
+    it('opens it once the user clicks "Open <host>"', async () => {
+      const s = setup();
+      s.reply.mockResolvedValue({ text: 'Found it.', draft: null, action: specificVideo });
+      await s.o.handle(utter('open that dp playlist'));
+      const nudgeId = s.says().at(-1)!.nudgeId;
+      await s.o.handle({ v: 1, type: 'chip', nudgeId, choice: 'Open www.youtube.com' });
+      expect(s.sent.filter((m) => m.type === 'open_url')).toEqual([
+        { v: 1, type: 'open_url', requestId: expect.any(String), url: 'https://www.youtube.com/watch?v=xyz' },
+      ]);
+      await s.o.handle({ v: 1, type: 'open_url_result', requestId: s.sent.find((m) => m.type === 'open_url')!.requestId, ok: true });
+      expect(s.says().at(-1)).toMatchObject({ text: 'Opening Aditya Verma DP playlist…' });
+    });
+
+    it('never opens it on "dismiss" — treated as an ordinary ignored chip', async () => {
+      const s = setup();
+      s.reply.mockResolvedValue({ text: 'Found it.', draft: null, action: specificVideo });
+      await s.o.handle(utter('open that dp playlist'));
+      const nudgeId = s.says().at(-1)!.nudgeId;
+      await s.o.handle({ v: 1, type: 'chip', nudgeId, choice: 'dismiss' });
+      expect(s.sent.filter((m) => m.type === 'open_url')).toHaveLength(0);
+    });
+
+    it('does not open a stale confirm click past the 2-minute window — falls through to an ordinary chip reply instead', async () => {
+      const s = setup();
+      s.reply.mockResolvedValue({ text: 'Found it.', draft: null, action: specificVideo });
+      await s.o.handle(utter('open that dp playlist'));
+      const nudgeId = s.says().at(-1)!.nudgeId;
+      s.advance(121_000);
+      s.reply.mockResolvedValue({ text: 'An answer.', draft: null });
+      await s.o.handle({ v: 1, type: 'chip', nudgeId, choice: 'Open www.youtube.com' });
+      expect(s.sent.filter((m) => m.type === 'open_url')).toHaveLength(0);
+      expect(s.reply).toHaveBeenCalledTimes(2); // fell through to the normal "answer the chip" path
+    });
+
+    it('does not require confirmation for a known-site result (homepage or one of our own search templates)', async () => {
+      const s = setup();
+      s.reply.mockResolvedValue({
+        text: 'On it.',
+        draft: null,
+        action: { open: 'url', url: 'https://www.youtube.com/results?search_query=dp', label: 'dp on YouTube' },
+      });
+      await s.o.handle(utter('can you find a dp search for me'));
+      expect(s.sent.filter((m) => m.type === 'open_url')).toHaveLength(1);
+      expect(s.says().at(-1)?.chips ?? []).not.toContain(expect.stringMatching(/^Open /));
+    });
+  });
+
+  it('passes the raw utterance as ctx.intentText for a normal utterance turn', async () => {
+    const s = setup();
+    s.reply.mockResolvedValue({ text: 'An answer.', draft: null });
+    await s.o.handle(utter('can you get Arc going'));
+    expect(s.reply.mock.calls[0]![1].intentText).toBe('can you get Arc going');
+  });
+
+  it("C1 regression (reviewer's probe): a nudge whose text contains an action verb, then a chip click, then a model reply carrying an action, produces no open_url/focus message", async () => {
+    const s = setup();
+    // Mirrors the real gate in chat.ts: an action is only ever included when intentText is present. This
+    // is the load-bearing assertion — if orchestrator.ts ever passed a truthy intentText for a chip click
+    // (e.g. the composed prompt text, which contains "open" here), this mock would wrongly include the
+    // action and the test would fail alongside the real production gate.
+    s.reply.mockImplementation((_text, ctx) =>
+      Promise.resolve({
+        text: 'On it.',
+        draft: null,
+        ...(ctx.intentText !== undefined ? { action: { open: 'url' as const, url: 'https://evil.example/login', label: 'evil' } } : {}),
+      }),
+    );
+    const openingNudge: NudgeDecision = { speak: true, kind: 'suggestion', text: 'Want me to open the runbook?', chips: ['explain the jump'], pointAt: null };
+    s.decide.mockResolvedValue(openingNudge);
+    await s.o.handle(runbook);
+    await s.o.tick();
+    await s.o.handle({ v: 1, type: 'chip', nudgeId: 'n1', choice: 'explain the jump' });
+    expect(s.reply.mock.calls[0]![0]).toBe('I clicked "explain the jump" on what you said: "Want me to open the runbook?"');
+    expect(s.reply.mock.calls[0]![1].intentText).toBeUndefined();
+    expect(s.sent.filter((m) => m.type === 'open_url' || m.type === 'focus')).toHaveLength(0);
   });
 });
 

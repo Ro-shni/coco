@@ -14,6 +14,7 @@ import { MUTE_MS, nextLocalMidnight, type NudgePolicy } from './nudge/policy.js'
 import type { NudgeDecision } from './persona/decision.js';
 import type { DecideInput } from './persona/decider.js';
 import type { ModelAction } from './persona/actions.js';
+import { isKnownSiteResult } from './sites.js';
 import type {
   ActivityState,
   BodyToBrain,
@@ -79,6 +80,16 @@ interface PendingOffer {
   at: number;
 }
 
+/** M7: a model-proposed url that isn't a known-site homepage/search result — Coco asked before opening it,
+ * via a "Open <host>" chip on the say that carries `nudgeId`. */
+interface PendingUrlConfirm {
+  nudgeId: string;
+  url: string;
+  label: string;
+  host: string;
+  at: number;
+}
+
 /** The most recent draft Coco offered to paste, from the say ("id") that carried it. */
 interface PendingDraft {
   id: string;
@@ -96,8 +107,13 @@ interface PendingPaste {
 
 const KEYFRAME_FRESH_MS = 60_000;
 const OFFER_TTL_MS = 120_000;
-const FOCUS_TIMEOUT_MS = 5000;
-const OPEN_TIMEOUT_MS = 5000;
+/** I5: a cold app launch (Xcode, Docker Desktop, a many-profile Chrome) regularly takes well over 5s —
+ * the original timeout reported failure for launches that were still succeeding. 20s for both; simplest
+ * to keep them equal rather than distinguish "focus of an already-running app" as a separate, shorter case. */
+const FOCUS_TIMEOUT_MS = 20_000;
+const OPEN_TIMEOUT_MS = 20_000;
+/** M7: how long an "Open <host>" confirm chip stays live — matches OFFER_TTL_MS's 2 minutes. */
+const URL_CONFIRM_TTL_MS = 120_000;
 const DRAFT_TTL_MS = 10 * 60_000;
 const PASTE_TIMEOUT_MS = 5000;
 /** "paste", "paste it", "paste that", "paste the draft", "paste into <App>" — the only utterances that trigger a paste. */
@@ -132,6 +148,16 @@ const withShh = (chips: readonly string[]): string[] => [
   SHH,
 ];
 
+/** M7: the host to show in an "Open <host>" confirm chip. `url` is already known-valid http(s) (extractAction
+ * checked), so this only ever returns undefined defensively. */
+function hostOf(url: string): string | undefined {
+  try {
+    return new URL(url).host;
+  } catch {
+    return undefined;
+  }
+}
+
 export class Orchestrator {
   private activity: ActivityState = 'reading';
   private keyframe: { key: string; jpeg: string; ts: number } | undefined;
@@ -139,6 +165,7 @@ export class Orchestrator {
   private pendingTrigger: PendingTrigger | undefined;
   private pendingFocus: PendingFocus | undefined;
   private pendingOpen: PendingOpen | undefined;
+  private pendingUrlConfirm: PendingUrlConfirm | undefined;
   /** A "bring X to the front" offer Coco just made; a bare "sure" within OFFER_TTL_MS accepts it. */
   private pendingOffer: PendingOffer | undefined;
   /** The most recent draft Coco offered to paste (non-private context only); stale after DRAFT_TTL_MS. */
@@ -283,7 +310,9 @@ export class Orchestrator {
     }
     const cmd = parseCommand(text);
     if (cmd) return cmd.type === 'open_url' ? this.startOpenUrl(cmd, text, now, source) : this.startFocus(cmd, text, now, source);
-    await this.answer(text, source);
+    // C1: intentText is the user's own words for THIS turn — the only thing a model-proposed action may
+    // ever be gated on. Never pass anything else here (see onChip, which passes undefined).
+    await this.answer(text, source, text);
   }
 
   /** Returns the live pending offer (if any) and clears it: any user message consumes or cancels the offer. */
@@ -299,17 +328,31 @@ export class Orchestrator {
     this.pendingOffer = target ? { target, kind: 'app', at: this.d.clock() } : undefined;
   }
 
+  /** M4: `send` validates against the protocol schema and throws on a mismatch (e.g. an overlong target) —
+   * this must happen BEFORE any pending state is set, or a failed send still leaves a dangling
+   * pendingFocus/pendingOpen with no request in flight to ever resolve it, surfacing minutes later as a
+   * spurious "didn't go through" (I5's timeout only makes that wait longer). */
   private startFocus(cmd: Extract<Command, { type: 'focus' }>, text: string, now: number, source: Source, recordUserTurn = true): void {
     const requestId = this.d.newId();
+    try {
+      this.d.send({ v: 1, type: 'focus', requestId, target: cmd.target, kind: cmd.kind });
+    } catch {
+      this.say(`I can't switch to "${cmd.target}" — that name's not valid.`, 'reply', { speak: this.speakForCommandConfirmation(source) });
+      return;
+    }
     this.pendingFocus = { requestId, target: cmd.target, kind: cmd.kind, source, at: now };
-    this.d.send({ v: 1, type: 'focus', requestId, target: cmd.target, kind: cmd.kind });
     if (recordUserTurn) this.d.memory.addTurn('user', text, now);
   }
 
   private startOpenUrl(cmd: Extract<Command, { type: 'open_url' }>, text: string, now: number, source: Source, recordUserTurn = true): void {
     const requestId = this.d.newId();
+    try {
+      this.d.send({ v: 1, type: 'open_url', requestId, url: cmd.url, ...(cmd.browser ? { browser: cmd.browser } : {}) });
+    } catch {
+      this.say(`I can't open "${cmd.label}" — that link's not valid.`, 'reply', { speak: this.speakForCommandConfirmation(source) });
+      return;
+    }
     this.pendingOpen = { requestId, label: cmd.label, source, at: now };
-    this.d.send({ v: 1, type: 'open_url', requestId, url: cmd.url, ...(cmd.browser ? { browser: cmd.browser } : {}) });
     if (recordUserTurn) this.d.memory.addTurn('user', text, now);
   }
 
@@ -327,9 +370,24 @@ export class Orchestrator {
       this.triggerPaste(now, 'chat');
       return;
     }
+    // M7: "Open <host>" on a model-proposed url that wasn't a known-site result (see answer()) — the only
+    // chip click that ever opens something, and only because the USER is now explicitly asking for it.
+    const confirm = this.pendingUrlConfirm;
+    if (confirm && confirm.nudgeId === id) {
+      this.pendingUrlConfirm = undefined;
+      if (now - confirm.at < URL_CONFIRM_TTL_MS && command === `open ${confirm.host}`.toLowerCase()) {
+        this.resolve(id, 'engaged');
+        this.startOpenUrl({ type: 'open_url', url: confirm.url, label: confirm.label }, choice, now, 'chat', false);
+        return;
+      }
+      // Dismissed or stale: fall through to the normal chip handling below (e.g. the "dismiss" chip itself).
+    }
     this.resolve(id, 'engaged');
     const original = this.recentTexts.get(id);
-    await this.answer(original ? `I clicked "${choice}" on what you said: "${original}"` : choice, 'chat');
+    // C1: a chip click's prompt text may quote model/screen-authored wording (the nudge text, the chip
+    // label) — it is NEVER the user's own utterance, so no intentText is passed and no action can execute
+    // for this turn (chat.ts strips any ```action block outright when intentText is undefined).
+    await this.answer(original ? `I clicked "${choice}" on what you said: "${original}"` : choice, 'chat', undefined);
   }
 
   // ---- nudging ------------------------------------------------------------
@@ -438,7 +496,9 @@ export class Orchestrator {
     if (!p || p.requestId !== msg.requestId) return;
     this.pendingOpen = undefined;
     const now = this.d.clock();
-    const text = msg.ok ? `Opening ${msg.opened ?? p.label}…` : `I couldn't open ${p.label}.`;
+    // I3: the confirmation always names the SITE (the label), never just the browser it opened in — the
+    // body has no idea what "YouTube" is, only which browser it used, so combine both when it reports one.
+    const text = msg.ok ? `Opening ${p.label}${msg.opened ? ` in ${msg.opened}` : ''}…` : `I couldn't open ${p.label}.`;
     this.say(text, 'reply', { speak: this.speakForCommandConfirmation(p.source) });
     this.d.memory.addTurn('assistant', text, now);
   }
@@ -494,7 +554,10 @@ export class Orchestrator {
 
   // ---- chat -------------------------------------------------------------------
 
-  private async answer(text: string, source: Source): Promise<void> {
+  /** `intentText` is the user's own raw utterance for THIS turn, or undefined when this reply is not
+   * directly speaking for the user (a chip click — see onChip/C1). It's threaded straight through to
+   * chat.ts, the only place a model-proposed action is ever gated. */
+  private async answer(text: string, source: Source, intentText: string | undefined): Promise<void> {
     const cur = this.d.timeline.current();
     this.d.log.info('chat_ctx', {
       hasCurrent: cur !== undefined,
@@ -509,11 +572,26 @@ export class Orchestrator {
         timeline: this.d.timeline.render(this.d.clock()),
         ...(cur ? { current: cur.msg } : {}),
         incidentMode: isIncident(cur?.msg),
+        intentText,
       });
       this.announceRecoveryIfNeeded();
-      this.deliverChatReply(reply, cur?.msg, source);
-      this.rememberOffer(reply.text);
-      if (reply.action) this.executeModelAction(reply.action, text, source);
+
+      // M7: a model-chosen URL that isn't one of our own known-site homepage/search results (i.e. not
+      // something sites.ts itself would have built) is confirmed with the user first, via an "Open <host>"
+      // chip, rather than opened automatically — a specific video/page/login page is not the same trust
+      // level as "the YouTube homepage" or "a YouTube search".
+      const urlAction = reply.action?.open === 'url' ? reply.action : undefined;
+      const host = urlAction && !isKnownSiteResult(urlAction.url) ? hostOf(urlAction.url) : undefined;
+      const deliveryText = host && reply.text === '' ? `Want me to open ${urlAction!.label}?` : reply.text;
+
+      const sayId = this.deliverChatReply({ ...reply, text: deliveryText }, cur?.msg, source, host ? [`Open ${host}`, 'dismiss'] : undefined);
+      this.rememberOffer(deliveryText);
+
+      if (reply.action && !host) {
+        this.executeModelAction(reply.action, text, source);
+      } else if (host && urlAction && sayId) {
+        this.pendingUrlConfirm = { nudgeId: sayId, url: urlAction.url, label: urlAction.label, host, at: this.d.clock() };
+      }
     } catch (err) {
       const wasOnline = this.online;
       this.onModelError(err);
@@ -533,22 +611,28 @@ export class Orchestrator {
     }
   }
 
-  /** Sends the chat reply as a say; when it carries a draft and the current context is a known, non-private app, attaches draftApp/the paste chip and remembers it as lastDraft. Speaks only `text`, never `draft` — the Body speaks the say's `text` field, which extractDraft has already stripped of any draft content. An empty `text` (the model's own completion-claim line was dropped alongside a still-pending action) sends no bubble at all — the action's result handler speaks for that turn instead. */
-  private deliverChatReply(reply: ChatReply, current: ContextMsg | undefined, source: Source): void {
+  /** Sends the chat reply as a say; when it carries a draft and the current context is a known, non-private
+   * app, attaches draftApp/the paste chip and remembers it as lastDraft. Speaks only `text`, never `draft`
+   * — the Body speaks the say's `text` field, which extractDraft has already stripped of any draft content.
+   * An empty `text` (the model's own completion-claim line was dropped alongside a still-pending action)
+   * sends no bubble at all — the action's result handler speaks for that turn instead. `extraChips` (M7's
+   * "Open <host>"/"dismiss") are appended to a draft-less reply's say. Returns the say's id (for
+   * pendingUrlConfirm to correlate the chip click), or undefined when nothing was sent. */
+  private deliverChatReply(reply: ChatReply, current: ContextMsg | undefined, source: Source, extraChips?: readonly string[]): string | undefined {
     const speak = this.speakForReply(source);
     if (!reply.draft) {
       this.lastDraft = undefined;
-      if (reply.text !== '') this.say(reply.text, 'reply', { speak });
-      return;
+      if (reply.text === '') return undefined;
+      return this.say(reply.text, 'reply', { speak, ...(extraChips ? { chips: extraChips } : {}) });
     }
     const app = current && !current.private ? current.app : undefined;
     if (!app) {
       this.lastDraft = undefined;
-      this.say(reply.text, 'reply', { draft: reply.draft, speak });
-      return;
+      return this.say(reply.text, 'reply', { draft: reply.draft, speak });
     }
     const id = this.say(reply.text, 'reply', { draft: reply.draft, draftApp: app, chips: [`paste into ${app}`], speak });
     this.lastDraft = { id, text: reply.draft, app, at: this.d.clock() };
+    return id;
   }
 
   /** Pastes the current draft, or explains there isn't one (missing or stale). The ONLY entry point for the paste flow. */

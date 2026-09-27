@@ -4,13 +4,18 @@ import { PRIORITY, type ChatMessage, type ModelGateway } from './model/gateway.j
 import { extractAction, intentAllowsAction, type ModelAction } from './persona/actions.js';
 import { claimsDraftExists, extractDraft, type ExtractedDraft } from './persona/drafts.js';
 import { CAPABILITY_RULE, describeScreen, wrapUntrusted } from './persona/prompt.js';
-import { checkReply, claimsUnperformedAction } from './persona/selfcheck.js';
+import { checkReply, claimsPendingAction, claimsUnperformedAction } from './persona/selfcheck.js';
 import type { ContextMsg } from './protocol.js';
 
 export interface ChatContext {
   timeline: string;
   current?: ContextMsg;
   incidentMode: boolean;
+  /** The user's OWN raw utterance for this turn — the only thing a model-proposed action is ever gated
+   * on (C1). Omit this (leave it undefined) for any reply whose prompt text is not literally what the user
+   * said, e.g. a chip-click-derived answer (the prompt quotes the chip label and the original nudge text,
+   * both of which can come from untrusted screen content) — an action never executes on such a turn. */
+  intentText?: string;
 }
 
 export interface ChatReply extends ExtractedDraft {
@@ -27,6 +32,9 @@ export const CANNOT_ACT_FALLBACK =
 const DRAFT_CLAIM_REWRITE_PROMPT =
   "You said you drafted a reply but didn't include it. Output the exact message inside a ```draft fenced block, then one short line.";
 export const NO_DRAFT_FALLBACK = "I haven't written a draft yet — tell me what you'd like to say and I'll draft it.";
+/** I2: what replaces a leftover "Opening…"/"Pulling that up" line once its action has been dropped (gated
+ * out or schema-invalid) — saying that without an action to back it up is its own honesty failure. */
+export const NO_ACTION_FALLBACK = "I won't open that unless you ask me to.";
 const DRAFT_RULE =
   '- When the user wants to reply, answer or send a message, write the exact message they could send inside a ```draft fenced block, then one short line. Never say you sent it; the user will paste and press Enter themselves.';
 const ACTION_RULE =
@@ -55,25 +63,30 @@ export class ChatResponder {
       return (await gateway.chat({ messages: msgs, priority: PRIORITY.user, temperature })).trim();
     };
 
+    let action: ModelAction | undefined;
+    // Strips a ```action block from `rawText`, gates the result on ctx.intentText — the user's own
+    // utterance, never model/screen text, and never present at all on a chip-derived turn (C1) — and, when
+    // a block was present but no action survived (gated out or schema-invalid), replaces a leftover
+    // "Opening…"/"Pulling that up" line with an honest one instead (I2: nothing is actually about to open).
+    // Called on every re-extraction below (I1), since either rewrite loop can itself produce a new block.
+    const applyAction = (rawText: string): string => {
+      const stripped = extractAction(rawText);
+      const blockWasPresent = stripped.blockPresent;
+      action = stripped.action && ctx.intentText !== undefined && intentAllowsAction(ctx.intentText) ? stripped.action : undefined;
+      return blockWasPresent && !action && claimsPendingAction(stripped.text) ? NO_ACTION_FALLBACK : stripped.text;
+    };
+
     let raw = await callModel(messages, 0.8);
     let extracted = extractDraft(raw);
-
-    // Model-proposed action (open a website/app): extracted and stripped from the text right away, then
-    // gated on the user's OWN utterance this turn — never on screen/OCR text, never for nudges (this path
-    // only runs for solicited chat turns; see orchestrator.ts, which never calls chat.reply for those).
-    const stripped = extractAction(extracted.text);
-    const action = stripped.action && intentAllowsAction(text) ? stripped.action : undefined;
-    extracted = { ...extracted, text: stripped.text };
+    extracted = { ...extracted, text: applyAction(extracted.text) };
 
     // The action itself is real — Coco is about to attempt it — but a short line claiming it ALREADY
     // happened is not: the actual confirmation comes from the orchestrator once the body reports back, not
     // from the model guessing ahead of it. Drop just that line and return early with the action intact,
     // bypassing the honesty-rewrite pipeline below (which would otherwise flag the now-empty text itself).
     if (action && claimsUnperformedAction(extracted.text)) {
-      const now = this.deps.clock();
-      memory.addTurn('user', text, now);
-      memory.addTurn('assistant', '', now);
-      return { text: '', draft: extracted.draft, action };
+      memory.addTurn('user', text, this.deps.clock());
+      return { text: '', draft: extracted.draft, action }; // M6: no empty assistant turn stored
     }
 
     // Honesty check runs on the non-draft text only: the draft is a message the user will send, not a claim Coco is making.
@@ -81,37 +94,40 @@ export class ChatResponder {
     if (!check.ok) {
       const rewrite: ChatMessage[] = [
         ...messages,
-        { role: 'assistant', content: raw },
+        { role: 'assistant', content: extracted.text },
         { role: 'user', content: `Rewrite that reply fixing: ${check.problems.join('; ')}. Output only the rewritten reply.` },
       ];
       raw = await callModel(rewrite, 0.7);
       extracted = extractDraft(raw);
+      extracted = { ...extracted, text: applyAction(extracted.text) };
       if (claimsUnperformedAction(extracted.text)) {
-        raw = CANNOT_ACT_FALLBACK;
         extracted = { text: CANNOT_ACT_FALLBACK, draft: null };
+        action = undefined; // the whole reply was replaced with "I can't act" — don't also open something
       }
     }
 
     // Consistency check: the model sometimes claims it wrote a draft without actually including one. Runs on
     // the final text of whichever path above settled (not just a clean, non-rewritten reply) — but never on
     // our own fallback text, only on model-produced text — and at most once, within the per-reply call budget.
-    const isOwnFallback = extracted.text === CANNOT_ACT_FALLBACK || extracted.text === NO_DRAFT_FALLBACK;
+    const isOwnFallback = extracted.text === CANNOT_ACT_FALLBACK || extracted.text === NO_DRAFT_FALLBACK || extracted.text === NO_ACTION_FALLBACK;
     if (extracted.draft === null && !isOwnFallback && claimsDraftExists(extracted.text) && calls < MAX_MODEL_CALLS) {
       const rewrite: ChatMessage[] = [
         ...messages,
-        { role: 'assistant', content: raw },
+        { role: 'assistant', content: extracted.text },
         { role: 'user', content: DRAFT_CLAIM_REWRITE_PROMPT },
       ];
       raw = await callModel(rewrite, 0.7);
       extracted = extractDraft(raw);
+      extracted = { ...extracted, text: applyAction(extracted.text) };
       if (extracted.draft === null) {
         extracted = { text: NO_DRAFT_FALLBACK, draft: null };
+        action = undefined;
       }
     }
 
     const now = this.deps.clock();
     memory.addTurn('user', text, now);
-    memory.addTurn('assistant', extracted.text, now);
+    if (extracted.text !== '') memory.addTurn('assistant', extracted.text, now); // M6: no empty assistant turn stored
     return action ? { ...extracted, action } : extracted;
   }
 

@@ -15,7 +15,23 @@ describe('parseCommand', () => {
     ['what is this', null],
     ['hello', null],
     ['go to', null],
+    // M2: a bare dotted target is a website only with an explicit scheme or an allowlisted TLD.
+    ['open readme.md', { type: 'focus', target: 'readme.md', kind: 'app' }],
+    ['open zoom.us', { type: 'focus', target: 'zoom.us', kind: 'app' }],
+    ['open github.com/x', { type: 'open_url', url: 'https://github.com/x', label: 'github.com/x' }],
   ] as const)('%s', (text, expected) => {
     expect(parseCommand(text)).toEqual(expected);
+  });
+
+  it('M3: preserves the original case of a URL path (only the site-name lookup is case-insensitive)', () => {
+    expect(parseCommand('open github.com/Ro-shni/Coco')).toEqual({
+      type: 'open_url',
+      url: 'https://github.com/Ro-shni/Coco',
+      label: 'github.com/Ro-shni/Coco',
+    });
+  });
+
+  it('M3: still resolves a known site by name regardless of case', () => {
+    expect(parseCommand('Open YouTube')).toEqual({ type: 'open_url', url: 'https://www.youtube.com', label: 'YouTube' });
   });
 });

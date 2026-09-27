@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { checkReply, claimsUnperformedAction, countSentences } from '../../src/persona/selfcheck.js';
+import { checkReply, claimsPendingAction, claimsUnperformedAction, countSentences } from '../../src/persona/selfcheck.js';
 
 const base = { kind: 'suggestion' as const, incidentMode: false, maxSentences: 2 };
 
@@ -179,5 +179,34 @@ describe('claimsUnperformedAction', () => {
       expect(claimsUnperformedAction(text)).not.toBeNull();
     },
   );
+});
+
+describe('claimsPendingAction', () => {
+  it.each([
+    'Opening the docs for you now.',
+    'Opening YouTube for you now.',
+    'Pulling that up.',
+    'Pulling it up.',
+    'Bringing that up.',
+    'Launching Arc for you now.',
+    'Searching for that up now.',
+  ])('flags a progressive in-flight claim: %s', (text) => {
+    expect(claimsPendingAction(text)).toBe(true);
+  });
+
+  it.each([
+    'Here you go.',
+    "I can't open that right now.",
+    "I'm not opening that.",
+    'The docs are open in another tab.',
+    'Slack is already open.',
+    '',
+  ])('does not flag ordinary or negated text: %s', (text) => {
+    expect(claimsPendingAction(text)).toBe(false);
+  });
+
+  it('is not also flagged by claimsUnperformedAction (progressive, not a completion claim)', () => {
+    expect(claimsUnperformedAction('Opening YouTube for you now.')).toBeNull();
+  });
 });
 

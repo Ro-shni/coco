@@ -67,6 +67,26 @@ export function claimsUnperformedAction(text: string): string | null {
   return null;
 }
 
+/** Progressive ("in-flight") verbs Coco might use while an action block is still pending confirmation from
+ * the body — "Opening YouTube for you now.", "Pulling that up.". These are not completion claims (the
+ * verb is progressive, not past-tense), so `claimsUnperformedAction` never flags them — but they still say
+ * something is happening when, if the action was dropped, nothing is. */
+const PENDING_ACTION =
+  /\b(?:opening|launching|searching|starting|playing)\b(?:\s+\S+){0,4}\s+(?:for you|now|up)\b|\b(?:pulling|bringing)\s+(?:it|that|this)\s+up\b/i;
+
+/**
+ * True when text implies an open/launch is in progress right now. Used only when a model action was
+ * present in the reply but did not survive (gate rejection or schema mismatch) — in that case, a leftover
+ * "Opening…"/"Pulling that up" line would be an honesty failure (nothing is actually opening), even though
+ * it is not a *completion* claim `claimsUnperformedAction` would catch.
+ */
+export function claimsPendingAction(text: string): boolean {
+  const clean = text.replace(/[‘’]/g, "'").replace(DRAFTS, ' ');
+  return clean
+    .split(/(?<=[.!?])\s+|\n+/)
+    .some((sentence) => PENDING_ACTION.test(sentence) && !NEGATION.test(sentence.slice(0, sentence.search(PENDING_ACTION) + 1)));
+}
+
 export interface CheckInput {
   text: string;
   kind: SayKind;

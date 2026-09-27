@@ -7,7 +7,8 @@ enum URLOpener {
     /// Call on main; completion (ok, opened, error) is delivered on main.
     static func open(url rawURL: String, browser: String?, completion: @escaping (Bool, String?, String?) -> Void) {
         dispatchPrecondition(condition: .onQueue(.main))
-        guard let url = webURL(rawURL) else {
+        // M5: the scheme check itself lives in CocoCore (WebURL), pure and Swift-Testing-covered.
+        guard let url = WebURL.parse(rawURL) else {
             completion(false, nil, "not a web address")
             return
         }
@@ -18,12 +19,6 @@ enum URLOpener {
             let opened = NSWorkspace.shared.open(url)
             completion(opened, opened ? name : nil, opened ? nil : "couldn't open the default browser")
         }
-    }
-
-    /// http/https only — never file://, javascript:, or any other scheme.
-    private static func webURL(_ raw: String) -> URL? {
-        guard let url = URL(string: raw), let scheme = url.scheme?.lowercased(), scheme == "http" || scheme == "https" else { return nil }
-        return url
     }
 
     private static func openWithBrowser(_ url: URL, browser: String, completion: @escaping (Bool, String?, String?) -> Void) {

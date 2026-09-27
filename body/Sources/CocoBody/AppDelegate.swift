@@ -40,6 +40,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         wire()
         installPauseHotkey()
         pushToTalk.install()
+        WindowFocus.prewarmInstalledAppCache()
         brain.start()
         perception.start()
         sensor.start()

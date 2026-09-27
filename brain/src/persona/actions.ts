@@ -1,7 +1,10 @@
 import { z } from 'zod';
 
-const OpenUrlAction = z.object({ open: z.literal('url'), url: z.string().min(1), label: z.string().min(1) });
-const OpenAppAction = z.object({ open: z.literal('app'), target: z.string().min(1) });
+/** Caps mirror (or are tighter than) the protocol-level limits (FocusMsg.target, OpenUrlMsg.url) so a
+ * schema mismatch is caught HERE — action rejected, no pending state ever created — instead of surfacing
+ * later as a throw from `encodeBrainMessage` after the orchestrator has already started tracking it. */
+const OpenUrlAction = z.object({ open: z.literal('url'), url: z.string().min(1).max(2048), label: z.string().min(1).max(80) });
+const OpenAppAction = z.object({ open: z.literal('app'), target: z.string().min(1).max(120) });
 const ModelActionSchema = z.discriminatedUnion('open', [OpenUrlAction, OpenAppAction]);
 
 export type ModelAction = z.infer<typeof ModelActionSchema>;
@@ -10,6 +13,10 @@ export interface ExtractedAction {
   /** The reply with any ```action fenced block(s) removed, trimmed. */
   text: string;
   action: ModelAction | null;
+  /** True when a ```action fenced block was present at all, regardless of whether it validated — distinct
+   * from `action` being null, which is also what a reply with NO block looks like. A caller that needs to
+   * know "was something proposed that then got rejected?" (chat.ts's I2 fix) checks this, not `action`. */
+  blockPresent: boolean;
 }
 
 /** A closed ```action fenced block. Global: a reply may (wrongly) contain more than one — only the first is
@@ -32,7 +39,7 @@ function isHttpOrHttps(url: string): boolean {
  */
 export function extractAction(reply: string): ExtractedAction {
   const blocks = [...reply.matchAll(ACTION_BLOCK)];
-  if (blocks.length === 0) return { text: reply.trim(), action: null };
+  if (blocks.length === 0) return { text: reply.trim(), action: null, blockPresent: false };
 
   const segments: string[] = [];
   let cursor = 0;
@@ -50,21 +57,39 @@ export function extractAction(reply: string): ExtractedAction {
   try {
     parsed = JSON.parse(blocks[0]![1]!.trim());
   } catch {
-    return { text, action: null };
+    return { text, action: null, blockPresent: true };
   }
   const result = ModelActionSchema.safeParse(parsed);
-  if (!result.success) return { text, action: null };
-  if (result.data.open === 'url' && !isHttpOrHttps(result.data.url)) return { text, action: null };
-  return { text, action: result.data };
+  if (!result.success) return { text, action: null, blockPresent: true };
+  if (result.data.open === 'url' && !isHttpOrHttps(result.data.url)) return { text, action: null, blockPresent: true };
+  return { text, action: result.data, blockPresent: true };
 }
 
 /**
  * Security-critical gate: a model-proposed action may only be executed when the user's OWN utterance for
- * this turn asked for it. Never derived from screen/OCR text, and never applied to unsolicited nudges
- * (those never carry actions in the first place — see chat.ts, the only caller that extracts actions).
+ * this turn asked for it — imperatively — never derived from screen/OCR text, never satisfied by a chip
+ * click (chat.ts strips action blocks outright on those turns; see orchestrator.ts C1), and never applied
+ * to unsolicited nudges (those never carry actions in the first place — chat.reply is only ever called for
+ * a user utterance or, without an intent, a chip-derived reply).
+ *
+ * An action verb merely appearing somewhere in the sentence is not enough (that was the injection-prone
+ * version of this gate): it must be imperative — at the very start of a clause, or immediately after an
+ * allowed lead-in ("can/could/would you (please)", "please", "I want you to") — and the clause must not be
+ * a wh-question ("what does this show?", "where do I start?"), even when it mentions a verb from the list.
  */
-const INTENT_WORDS = /\b(open|launch|start|play|search|show|go to|bring up|pull up|take me)\b/i;
+const ADDRESS_PREFIX = /^(?:hey\s+)?coco[,:]?\s*/i;
+const LEAD_IN = /^(?:(?:can|could|would)\s+you\s+(?:please\s+)?|please\s+|i\s+want\s+you\s+to\s+)/i;
+const ACTION_VERB_AT_START = /^(?:open|launch|start|play|search|show|go\s+to|bring\s+up|pull\s+up|take\s+me)\b/i;
+const WH_QUESTION = /^(?:what|why|how|where|when|who|which)\b.*\?\s*$/i;
 
 export function intentAllowsAction(utterance: string): boolean {
-  return INTENT_WORDS.test(utterance);
+  const clauses = utterance
+    .trim()
+    .split(/(?<=[.!?])\s+/)
+    .filter((c) => c !== '');
+  return clauses.some((rawClause) => {
+    const clause = rawClause.trim().replace(ADDRESS_PREFIX, '');
+    if (WH_QUESTION.test(clause)) return false;
+    return ACTION_VERB_AT_START.test(clause.replace(LEAD_IN, ''));
+  });
 }

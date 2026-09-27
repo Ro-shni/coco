@@ -129,11 +129,21 @@ export const PasteMsg = z.object({
 });
 export type PasteMsg = z.infer<typeof PasteMsg>;
 
+/** True only for a parseable http/https URL — never file:, javascript:, a custom app scheme, or garbage. */
+function isHttpUrl(url: string): boolean {
+  try {
+    const scheme = new URL(url).protocol;
+    return scheme === 'http:' || scheme === 'https:';
+  } catch {
+    return false;
+  }
+}
+
 export const OpenUrlMsg = z.object({
   v,
   type: z.literal('open_url'),
   requestId: z.string().min(1),
-  url: z.string().min(1),
+  url: z.string().min(1).max(2048).refine(isHttpUrl, 'url must be http(s)'),
   browser: z.string().min(1).max(60).optional(),
 });
 export type OpenUrlMsg = z.infer<typeof OpenUrlMsg>;
