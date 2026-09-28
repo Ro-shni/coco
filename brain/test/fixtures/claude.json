@@ -1,0 +1,7 @@
+{
+  "numStartups": 3,
+  "mcpServers": {
+    "bifrost": { "type": "http", "url": "http://ai-gateway.prd.meesho.int/mcp", "headers": { "Authorization": "Bearer sk-bf-SECRET1" } },
+    "kubectl-readonly": { "type": "stdio", "command": "/opt/kube/.venv/bin/python", "args": ["-m", "kubectl_mcp_tool.mcp_server", "--read-only", "--transport", "stdio"], "env": { "KUBECONFIG": "/Users/me/.kube/SECRETPATH" } }
+  }
+}

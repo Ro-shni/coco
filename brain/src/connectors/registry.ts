@@ -84,6 +84,10 @@ export class ConnectorRegistry {
     this.saveModes();
   }
 
+  importedKeys(): Set<string> {
+    return new Set(this.servers.flatMap((s) => s.importKey ? [s.importKey] : []));
+  }
+
   private saveServers(): void { writeAtomic(this.serversPath, stringify({ servers: this.servers })); }
   private saveModes(): void { writeAtomic(this.autonomyPath, stringify({ tools: this.modes })); }
 }

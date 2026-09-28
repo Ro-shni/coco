@@ -85,4 +85,10 @@ describe('ConnectorRegistry', () => {
     writeFileSync(join(d, 'autonomy.yaml'), 'tools:\n  - [invalid: {yaml: syntax');
     expect(new ConnectorRegistry(d).autonomy('foo__bar')).toBeUndefined();
   });
+
+  it('reports imported discovery keys', () => {
+    const r = new ConnectorRegistry(dir());
+    r.upsert({ ...kubectl, importKey: 'abc123' });
+    expect(r.importedKeys()).toEqual(new Set(['abc123']));
+  });
 });
