@@ -47,3 +47,14 @@ verdict, what was sent to the Body, and its result), plus one line per unsolicit
 local-only**: this file can contain the full text of what you said and what Coco said back (unlike the
 normal `brain.log`, which stays counts-only). Turn it on only for debugging, and treat `trace.jsonl` the same
 way you'd treat chat history.
+
+## Coco Studio & connectors
+
+Open Studio with the **Studio** button in Coco's chat window, or menu bar ● → **Open Coco Studio…** (⌘,). Studio is served by Coco's brain on `127.0.0.1` only. Each launch uses a one-time link; the page swaps it for a session kept in that window only (no cookies).
+
+- **Connectors → Found on this Mac:** your `~/.claude.json` servers appear automatically; add a folder (e.g. your code folder) to scan its `.mcp.json` files. Import shows the exact command it will run; credentials go to your macOS Keychain. Production hosts (`*.prd.meesho.int`, `*.int.meesho.int`, `*.mrouter.int`) are blocked, so `bifrost` and `devops-brain` show as locked.
+- **Catalog:** Atlassian (sign in via the browser), GitHub (token), Grafana, Files, Slack. Sign-in redirects always come back to `http://127.0.0.1:47823/oauth/callback` (change with `connectors.oauthCallbackPort`). Slack needs an internal Slack app approved by your admins that lists that redirect URL — paste its Client ID in Studio.
+- **Permissions:** each tool is *Run freely*, *Ask me first* or *Off*. Read-style tools default to *Run freely*, anything that changes things to *Ask me first*; anything built from text on your screen always asks. Confirmations run only from the **Run it** button.
+- **Activity:** every tool call Coco made or you tested, with its decision.
+
+Coco only asks the local model to use tools when your message matches a connected tool, and answers cite the source ("per Jira").
