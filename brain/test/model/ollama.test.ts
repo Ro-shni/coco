@@ -101,3 +101,48 @@ describe('OllamaGateway.health / supportsVision', () => {
     expect(await new OllamaGateway({ baseUrl: 'http://o', model: 'm', fetchImpl: no.impl }).supportsVision()).toBe(false);
   });
 });
+
+describe('OllamaGateway.chatWithTools', () => {
+  const tools = [{ name: 'jira__getIssue', description: 'Get a Jira issue', parameters: { type: 'object', properties: { key: { type: 'string' } }, required: ['key'] } }];
+
+  it('sends tools in Ollama function format and returns parsed tool calls', async () => {
+    const f = fakeFetch(() =>
+      ok({ message: { content: '', tool_calls: [{ function: { name: 'jira__getIssue', arguments: { key: 'DEVOPS-35236' } } }] } }),
+    );
+    const gw = new OllamaGateway({ baseUrl: 'http://ollama', model: 'qwen3.5:9b', fetchImpl: f.impl });
+    const out = await gw.chatWithTools({ messages: [{ role: 'user', content: 'status of DEVOPS-35236?' }], tools, priority: PRIORITY.user });
+    expect(out).toEqual({ content: '', toolCalls: [{ name: 'jira__getIssue', arguments: { key: 'DEVOPS-35236' } }] });
+    expect(f.calls[0]!.body).toMatchObject({
+      model: 'qwen3.5:9b',
+      stream: false,
+      think: false,
+      tools: [{ type: 'function', function: { name: 'jira__getIssue', description: 'Get a Jira issue', parameters: tools[0]!.parameters } }],
+    });
+  });
+
+  it('accepts JSON-string arguments (some models emit them) and drops malformed calls', async () => {
+    const f = fakeFetch(() =>
+      ok({ message: { content: 'x', tool_calls: [
+        { function: { name: 'a', arguments: '{"k":1}' } },
+        { function: { name: 'b', arguments: 'not json' } },
+        { function: { arguments: {} } },
+      ] } }),
+    );
+    const gw = new OllamaGateway({ baseUrl: 'http://ollama', model: 'm', fetchImpl: f.impl });
+    const out = await gw.chatWithTools({ messages: [], tools: [], priority: PRIORITY.user });
+    expect(out.toolCalls).toEqual([{ name: 'a', arguments: { k: 1 } }]);
+  });
+
+  it('returns content with no tool calls, stripping <think> blocks', async () => {
+    const f = fakeFetch(() => ok({ message: { content: '<think>hm</think>Done looking.' } }));
+    const gw = new OllamaGateway({ baseUrl: 'http://ollama', model: 'm', fetchImpl: f.impl });
+    expect(await gw.chatWithTools({ messages: [], tools: [], priority: PRIORITY.user })).toEqual({ content: 'Done looking.', toolCalls: [] });
+  });
+
+  it('maps 4xx to ModelRequestError and network failure to ModelUnavailableError', async () => {
+    const bad = new OllamaGateway({ baseUrl: 'http://o', model: 'm', fetchImpl: fakeFetch(() => new Response('nope', { status: 400 })).impl });
+    await expect(bad.chatWithTools({ messages: [], tools: [], priority: PRIORITY.user })).rejects.toBeInstanceOf(ModelRequestError);
+    const down = new OllamaGateway({ baseUrl: 'http://o', model: 'm', fetchImpl: (async () => { throw new Error('ECONNREFUSED'); }) as typeof fetch });
+    await expect(down.chatWithTools({ messages: [], tools: [], priority: PRIORITY.user })).rejects.toBeInstanceOf(ModelUnavailableError);
+  });
+});

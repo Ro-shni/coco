@@ -31,6 +31,40 @@ export class ModelRequestError extends Error {
 
 export const stripThinking = (text: string): string => text.replace(/<think>[\s\S]*?<\/think>/g, '').trim();
 
+export interface ToolSpec {
+  name: string;
+  description: string;
+  /** JSON Schema for the arguments object. */
+  parameters: Record<string, unknown>;
+}
+
+export interface ToolCall {
+  name: string;
+  arguments: Record<string, unknown>;
+}
+
+export type ToolChatMessage =
+  | ChatMessage
+  | { role: 'assistant'; content: string; tool_calls: { function: { name: string; arguments: Record<string, unknown> } }[] }
+  | { role: 'tool'; content: string; tool_name: string };
+
+export interface ChatToolsRequest {
+  messages: ToolChatMessage[];
+  tools: ToolSpec[];
+  priority: Priority;
+  temperature?: number;
+}
+
+export interface ChatToolsResult {
+  content: string;
+  toolCalls: ToolCall[];
+}
+
+/** Separate from ModelGateway so existing fakes don't need a tool-calling stub. */
+export interface ToolCapableGateway {
+  chatWithTools(req: ChatToolsRequest): Promise<ChatToolsResult>;
+}
+
 interface QueueItem {
   priority: Priority;
   seq: number;
