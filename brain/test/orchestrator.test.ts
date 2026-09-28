@@ -1,4 +1,4 @@
-import { mkdtempSync } from 'node:fs';
+import { existsSync, mkdtempSync, readFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { describe, expect, it, vi } from 'vitest';
@@ -13,6 +13,7 @@ import { NudgePolicy } from '../src/nudge/policy.js';
 import { Orchestrator, type OrchestratorDeps } from '../src/orchestrator.js';
 import type { NudgeDecision } from '../src/persona/decision.js';
 import { encodeBrainMessage, type ActivityState, type BrainToBody, type PasteMsg, type SayMsg } from '../src/protocol.js';
+import { createFileTrace, type DecisionTrace } from '../src/trace.js';
 import { T0, ctx } from './helpers/messages.js';
 
 const decision: NudgeDecision = { speak: true, kind: 'suggestion', text: 'p99 jumped at 10:40. Check the 10:38 deploy?', chips: ['check deploys'], pointAt: '10:40' };
@@ -1095,4 +1096,154 @@ describe('voice (SayMsg.speak)', () => {
     expect(said.text).not.toContain(draftReply.draft);
   });
 });
+
+describe('decision trace', () => {
+  const utter = (text: string, source: 'voice' | 'chat' = 'chat') => ({ v: 1 as const, type: 'utterance' as const, text, source });
+
+  function fakeTrace(): { [K in keyof DecisionTrace]: ReturnType<typeof vi.fn> } {
+    return {
+      startTurn: vi.fn(() => 'turn-1'),
+      setRoute: vi.fn(),
+      addModelCall: vi.fn(),
+      setExtracted: vi.fn(),
+      setGate: vi.fn(),
+      addSent: vi.fn(),
+      addResult: vi.fn(),
+      finishTurn: vi.fn(),
+      logNudgeDecision: vi.fn(),
+      sweep: vi.fn(),
+    };
+  }
+
+  function withRealTrace(overrides: Partial<OrchestratorDeps> = {}) {
+    const logsDir = mkdtempSync(join(tmpdir(), 'coco-orch-trace-'));
+    let n = 0;
+    const trace = createFileTrace({ logsDir, clock: Date.now, newId: () => `turn${++n}` });
+    const s = setup({ trace, ...overrides });
+    const path = join(logsDir, 'trace.jsonl');
+    const lines = (): Record<string, unknown>[] =>
+      existsSync(path)
+        ? readFileSync(path, 'utf8')
+            .split('\n')
+            .filter((l) => l !== '')
+            .map((l) => JSON.parse(l))
+        : [];
+    return { ...s, lines };
+  }
+
+  it('routes every onUtterance branch to the matching `via`, sharing one turnId per turn', async () => {
+    const s = setup({ trace: fakeTrace() });
+    const trace = s.o['trace'] as ReturnType<typeof fakeTrace>;
+
+    await s.o.handle(utter('go to slack')); // command
+    await s.o.handle(utter('shh')); // mute
+    await s.o.handle(utter('clear chat')); // clear
+    await s.o.handle(utter('what is this?')); // model (falls through to chat.reply)
+
+    const routes = trace.setRoute.mock.calls.map(([, route]: [string, { via: string }]) => route.via);
+    expect(routes).toEqual(['command', 'mute', 'clear', 'model']);
+    // Every startTurn call got an utterance recorded, and every setRoute call used that same turn's id.
+    expect(trace.startTurn).toHaveBeenCalledTimes(4);
+    for (const [turnId] of trace.setRoute.mock.calls) expect(turnId).toBe('turn-1');
+  });
+
+  it('routes an accepted focus offer to "offer" and a paste utterance to "paste"', async () => {
+    const s = setup({ trace: fakeTrace() });
+    const trace = s.o['trace'] as ReturnType<typeof fakeTrace>;
+    s.reply.mockResolvedValueOnce({ text: 'Switch to Slack?', draft: null });
+    await s.o.handle(utter('what should I do?'));
+    await s.o.handle(utter('sure'));
+    expect(trace.setRoute).toHaveBeenNthCalledWith(2, 'turn-1', { via: 'offer' });
+
+    s.reply.mockResolvedValueOnce({ text: 'Here you go.', draft: 'hello' });
+    await s.o.handle(ctx({ app: 'Slack', bundleId: 'com.tinyspeck.slackmacgap', private: false }));
+    await s.o.handle(utter('draft a reply'));
+    await s.o.handle(utter('paste'));
+    expect(trace.setRoute).toHaveBeenLastCalledWith('turn-1', { via: 'paste' });
+  });
+
+  it('writes one real JSON line per turn, correlating a command\'s sent focus with its later result', async () => {
+    const s = withRealTrace();
+    await s.o.handle(utter('go to slack'));
+    await s.o.handle({ v: 1, type: 'focus_result', requestId: 'n1', ok: true, matched: 'Slack' });
+
+    const lines = s.lines();
+    expect(lines).toHaveLength(1);
+    expect(lines[0]).toMatchObject({
+      turnId: 'turn1',
+      utterance: { source: 'chat', text: 'go to slack' },
+      route: { via: 'command', command: { type: 'focus', target: 'slack', kind: 'app' } },
+      sent: [{ type: 'focus', payload: { target: 'slack', kind: 'app' } }],
+      result: { type: 'focus_result', ok: true, matched: 'Slack' },
+    });
+  });
+
+  it('finishes a mute/clear turn immediately, with a say `sent` and no `result` field', async () => {
+    const s = withRealTrace();
+    await s.o.handle(utter('shh'));
+    const lines = s.lines();
+    expect(lines).toHaveLength(1);
+    expect(lines[0]).toMatchObject({ route: { via: 'mute' }, sent: [{ type: 'say', payload: { text: TEXTMuted30() } }] });
+    expect(lines[0]).not.toHaveProperty('result');
+  });
+
+  it('flushes a "command" turn on a focus timeout when no result ever arrives', async () => {
+    const s = withRealTrace();
+    await s.o.handle(utter('go to slack'));
+    expect(s.lines()).toHaveLength(0); // still buffered, awaiting the result
+    s.advance(20_000);
+    await s.o.pulse();
+    const lines = s.lines();
+    expect(lines).toHaveLength(1);
+    expect(lines[0]).toMatchObject({ result: { type: 'focus_result', ok: false } });
+  });
+
+  it('records a model-routed turn end-to-end: model_call, extracted, gate, and the eventual focus result', async () => {
+    const s = withRealTrace();
+    s.reply.mockResolvedValueOnce({ text: 'Opening Slack.', draft: null, action: { open: 'app', target: 'Slack' } });
+    await s.o.handle(utter('hey so could you open that chat app'));
+    const focus = s.sent.find((m) => m.type === 'focus') as { requestId: string } | undefined;
+    expect(focus).toBeDefined();
+    await s.o.handle({ v: 1, type: 'focus_result', requestId: focus!.requestId, ok: true, matched: 'Slack' });
+
+    const lines = s.lines();
+    expect(lines).toHaveLength(1);
+    expect(lines[0]!.route).toEqual({ via: 'model' });
+    expect(lines[0]!.sent).toEqual([
+      { type: 'say', payload: { text: 'Opening Slack.', hasDraft: false } },
+      { type: 'focus', payload: { target: 'Slack', kind: 'app' } },
+    ]);
+    expect(lines[0]!.result).toMatchObject({ type: 'focus_result', ok: true, matched: 'Slack' });
+  });
+
+  it('finishes a model-routed turn immediately when no action executes (a plain reply)', async () => {
+    const s = withRealTrace();
+    s.reply.mockResolvedValueOnce({ text: 'That is Grafana.', draft: null });
+    await s.o.handle(utter('what is this?'));
+    const lines = s.lines();
+    expect(lines).toHaveLength(1);
+    expect(lines[0]!.route).toEqual({ via: 'model' });
+    expect(lines[0]).not.toHaveProperty('result');
+  });
+
+  it('finishes the turn even when chat.reply throws', async () => {
+    const s = withRealTrace();
+    s.reply.mockRejectedValueOnce(new Error('boom'));
+    await s.o.handle(utter('what is this?'));
+    const lines = s.lines();
+    expect(lines).toHaveLength(1);
+    expect(lines[0]!.route).toEqual({ via: 'model' });
+  });
+
+  it('sweeps a stale, still-open turn from pulse() so it is never lost forever', async () => {
+    const s = setup({ trace: fakeTrace() });
+    const trace = s.o['trace'] as ReturnType<typeof fakeTrace>;
+    await s.o.pulse();
+    expect(trace.sweep).toHaveBeenCalled();
+  });
+});
+
+function TEXTMuted30(): string {
+  return "Muted for 30 minutes. I'll still answer if you ask.";
+}
 

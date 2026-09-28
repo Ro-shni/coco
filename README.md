@@ -37,3 +37,13 @@ Then rebuild and grant permissions again.
 `test.sh` and `bundle.sh` build Swift into `~/Library/Caches/coco-swift-build` rather than `body/.build`: a `build.db` under a repo checked out inside `~/Downloads` can throw intermittent "disk I/O error"s. Override the location with `COCO_SWIFT_SCRATCH=/some/path`.
 
 Logs: `~/Library/Logs/Coco/`. Data: `~/Library/Application Support/Coco/coco.db`.
+
+### Debugging
+
+Set `debug.trace: true` in `config.yaml` to have the brain append a decision trace — one JSON line per user
+turn (utterance, which branch routed it, every model call, the extracted reply/action, the intent gate's
+verdict, what was sent to the Body, and its result), plus one line per unsolicited-nudge attempt — to
+`~/Library/Logs/Coco/trace.jsonl` (rotated to `trace.jsonl.1` at 5MB). It's **off by default, opt-in, and
+local-only**: this file can contain the full text of what you said and what Coco said back (unlike the
+normal `brain.log`, which stays counts-only). Turn it on only for debugging, and treat `trace.jsonl` the same
+way you'd treat chat history.

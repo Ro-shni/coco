@@ -46,6 +46,11 @@ describe('parseCommand', () => {
     expect(parseCommand(text)).toEqual(expected);
   });
 
+  it('drops a trailing "for me" so it never becomes part of the app name', () => {
+    expect(parseCommand('open slack for me')).toEqual({ type: 'focus', target: 'slack', kind: 'app' });
+    expect(parseCommand('can you open mail for me please?')).toEqual({ type: 'focus', target: 'mail', kind: 'app' });
+  });
+
   it('M3: preserves the original case of a URL path (only the site-name lookup is case-insensitive)', () => {
     expect(parseCommand('open github.com/Ro-shni/Coco')).toEqual({
       type: 'open_url',

@@ -16,6 +16,7 @@ import type { DecideInput } from './persona/decider.js';
 import type { ModelAction } from './persona/actions.js';
 import { claimsPendingAction } from './persona/selfcheck.js';
 import { isKnownSiteResult } from './sites.js';
+import { noopTrace, type DecisionTrace } from './trace.js';
 import type {
   ActivityState,
   BodyToBrain,
@@ -44,6 +45,8 @@ export interface OrchestratorDeps {
   gateway: Pick<ModelGateway, 'health'>;
   keyframesEnabled: boolean;
   log: Logger;
+  /** Opt-in decision trace (see trace.ts, config debug.trace). Defaults to a no-op. */
+  trace?: DecisionTrace;
 }
 
 interface PendingNudge {
@@ -66,6 +69,9 @@ interface PendingFocus {
   kind: 'app' | 'window';
   source: Source;
   at: number;
+  /** The decision-trace turnId that sent this focus, or '' when there isn't one (e.g. a chip-derived
+   * confirm). */
+  turnId: string;
 }
 
 interface PendingOpen {
@@ -73,6 +79,8 @@ interface PendingOpen {
   label: string;
   source: Source;
   at: number;
+  /** The decision-trace turnId that sent this open, or '' when there isn't one. */
+  turnId: string;
 }
 
 interface PendingOffer {
@@ -104,6 +112,8 @@ interface PendingPaste {
   app: string;
   source: Source;
   at: number;
+  /** The decision-trace turnId that sent this paste, or '' when there isn't one (e.g. a "paste into <App>" chip). */
+  turnId: string;
 }
 
 const KEYFRAME_FRESH_MS = 60_000;
@@ -181,8 +191,10 @@ export class Orchestrator {
   private healthBackoffMs = 0;
   private nextHealthCheckAt = 0;
   private lastContextLog: { app: string; bundleId: string; ocrChars: number } | undefined;
+  private readonly trace: DecisionTrace;
 
   constructor(private readonly d: OrchestratorDeps) {
+    this.trace = d.trace ?? noopTrace;
     const mutedUntil = d.memory.getState<number>(MUTED_STATE_KEY);
     if (typeof mutedUntil === 'number') d.policy.muteUntil(mutedUntil);
   }
@@ -224,6 +236,7 @@ export class Orchestrator {
     this.expirePendingPaste(now);
     this.clearStalePendingTrigger(now);
     this.maybeRequestKeyframe(now);
+    this.trace.sweep(now);
     return this.retryPendingTrigger();
   }
 
@@ -296,24 +309,47 @@ export class Orchestrator {
 
   private async onUtterance(text: string, source: Source): Promise<void> {
     const now = this.d.clock();
+    const turnId = this.trace.startTurn({ source, text });
     this.resolveAll('engaged');
     const offer = this.takeOffer(now);
-    if (offer && isAffirmation(text)) return this.startFocus({ type: 'focus', target: offer.target, kind: offer.kind }, text, now, source);
-    if (PASTE_UTTERANCE.test(text.trim())) return this.triggerPaste(now, source);
+    if (offer && isAffirmation(text)) {
+      this.trace.setRoute(turnId, { via: 'offer' });
+      return this.startFocus({ type: 'focus', target: offer.target, kind: offer.kind }, text, now, source, true, turnId);
+    }
+    if (PASTE_UTTERANCE.test(text.trim())) {
+      this.trace.setRoute(turnId, { via: 'paste' });
+      return this.triggerPaste(now, source, turnId);
+    }
     const command = text.trim().toLowerCase();
-    if (command === SHH) return this.mute(now + MUTE_MS, TEXT.muted30);
-    if (command === SHH_TODAY) return this.mute(nextLocalMidnight(now), TEXT.mutedToday);
-    if (command === UNMUTE) return this.mute(now, TEXT.unmuted);
+    if (command === SHH) {
+      this.trace.setRoute(turnId, { via: 'mute' });
+      return this.mute(now + MUTE_MS, TEXT.muted30, turnId);
+    }
+    if (command === SHH_TODAY) {
+      this.trace.setRoute(turnId, { via: 'mute' });
+      return this.mute(nextLocalMidnight(now), TEXT.mutedToday, turnId);
+    }
+    if (command === UNMUTE) {
+      this.trace.setRoute(turnId, { via: 'mute' });
+      return this.mute(now, TEXT.unmuted, turnId);
+    }
     if (command === CLEAR_CHAT || command === FORGET_CHAT) {
+      this.trace.setRoute(turnId, { via: 'clear' });
       this.d.memory.clearTurns();
-      this.say(TEXT.chatCleared, 'reply');
+      this.sayTraced(TEXT.chatCleared, 'reply', turnId);
       return;
     }
     const cmd = parseCommand(text);
-    if (cmd) return cmd.type === 'open_url' ? this.startOpenUrl(cmd, text, now, source) : this.startFocus(cmd, text, now, source);
+    if (cmd) {
+      this.trace.setRoute(turnId, { via: 'command', command: cmd });
+      return cmd.type === 'open_url'
+        ? this.startOpenUrl(cmd, text, now, source, true, turnId)
+        : this.startFocus(cmd, text, now, source, true, turnId);
+    }
+    this.trace.setRoute(turnId, { via: 'model' });
     // C1: intentText is the user's own words for THIS turn — the only thing a model-proposed action may
     // ever be gated on. Never pass anything else here (see onChip, which passes undefined).
-    await this.answer(text, source, text);
+    await this.answer(text, source, text, turnId);
   }
 
   /** Returns the live pending offer (if any) and clears it: any user message consumes or cancels the offer. */
@@ -333,27 +369,35 @@ export class Orchestrator {
    * this must happen BEFORE any pending state is set, or a failed send still leaves a dangling
    * pendingFocus/pendingOpen with no request in flight to ever resolve it, surfacing minutes later as a
    * spurious "didn't go through" (I5's timeout only makes that wait longer). */
-  private startFocus(cmd: Extract<Command, { type: 'focus' }>, text: string, now: number, source: Source, recordUserTurn = true): void {
+  private startFocus(cmd: Extract<Command, { type: 'focus' }>, text: string, now: number, source: Source, recordUserTurn = true, turnId = ''): void {
     const requestId = this.d.newId();
     try {
       this.d.send({ v: 1, type: 'focus', requestId, target: cmd.target, kind: cmd.kind });
     } catch {
+      this.trace.addSent(turnId, { type: 'focus', payload: { target: cmd.target, kind: cmd.kind } });
+      this.trace.addResult(turnId, { type: 'focus_result', ok: false, ms: 0 });
+      this.trace.finishTurn(turnId);
       this.say(`I can't switch to "${cmd.target}" — that name's not valid.`, 'reply', { speak: this.speakForCommandConfirmation(source) });
       return;
     }
-    this.pendingFocus = { requestId, target: cmd.target, kind: cmd.kind, source, at: now };
+    this.trace.addSent(turnId, { type: 'focus', payload: { target: cmd.target, kind: cmd.kind } });
+    this.pendingFocus = { requestId, target: cmd.target, kind: cmd.kind, source, at: now, turnId };
     if (recordUserTurn) this.d.memory.addTurn('user', text, now);
   }
 
-  private startOpenUrl(cmd: Extract<Command, { type: 'open_url' }>, text: string, now: number, source: Source, recordUserTurn = true): void {
+  private startOpenUrl(cmd: Extract<Command, { type: 'open_url' }>, text: string, now: number, source: Source, recordUserTurn = true, turnId = ''): void {
     const requestId = this.d.newId();
     try {
       this.d.send({ v: 1, type: 'open_url', requestId, url: cmd.url, ...(cmd.browser ? { browser: cmd.browser } : {}) });
     } catch {
+      this.trace.addSent(turnId, { type: 'open_url', payload: { url: cmd.url, label: cmd.label, ...(cmd.browser ? { browser: cmd.browser } : {}) } });
+      this.trace.addResult(turnId, { type: 'open_url_result', ok: false, ms: 0 });
+      this.trace.finishTurn(turnId);
       this.say(`I can't open "${cmd.label}" — that link's not valid.`, 'reply', { speak: this.speakForCommandConfirmation(source) });
       return;
     }
-    this.pendingOpen = { requestId, label: cmd.label, source, at: now };
+    this.trace.addSent(turnId, { type: 'open_url', payload: { url: cmd.url, label: cmd.label, ...(cmd.browser ? { browser: cmd.browser } : {}) } });
+    this.pendingOpen = { requestId, label: cmd.label, source, at: now, turnId };
     if (recordUserTurn) this.d.memory.addTurn('user', text, now);
   }
 
@@ -483,6 +527,8 @@ export class Orchestrator {
       : `I can't find ${p.kind === 'window' ? 'a window' : 'an app'} called "${p.target}".`;
     this.say(text, 'reply', { speak: this.speakForCommandConfirmation(p.source) });
     this.d.memory.addTurn('assistant', text, now);
+    this.trace.addResult(p.turnId, { type: 'focus_result', ok: msg.ok, ...(msg.matched ? { matched: msg.matched } : {}), ms: now - p.at });
+    this.trace.finishTurn(p.turnId);
   }
 
   private expirePendingFocus(now: number): void {
@@ -490,6 +536,8 @@ export class Orchestrator {
     if (!p || now - p.at < FOCUS_TIMEOUT_MS) return;
     this.pendingFocus = undefined;
     this.say("That switch didn't go through.", 'reply', { speak: this.speakForCommandConfirmation(p.source) });
+    this.trace.addResult(p.turnId, { type: 'focus_result', ok: false, ms: now - p.at });
+    this.trace.finishTurn(p.turnId);
   }
 
   private onOpenUrlResult(msg: OpenUrlResultMsg): void {
@@ -502,6 +550,8 @@ export class Orchestrator {
     const text = msg.ok ? `Opening ${p.label}${msg.opened ? ` in ${msg.opened}` : ''}…` : `I couldn't open ${p.label}.`;
     this.say(text, 'reply', { speak: this.speakForCommandConfirmation(p.source) });
     this.d.memory.addTurn('assistant', text, now);
+    this.trace.addResult(p.turnId, { type: 'open_url_result', ok: msg.ok, ...(msg.opened ? { opened: msg.opened } : {}), ms: now - p.at });
+    this.trace.finishTurn(p.turnId);
   }
 
   private expirePendingOpen(now: number): void {
@@ -509,6 +559,8 @@ export class Orchestrator {
     if (!p || now - p.at < OPEN_TIMEOUT_MS) return;
     this.pendingOpen = undefined;
     this.say("That didn't open.", 'reply', { speak: this.speakForCommandConfirmation(p.source) });
+    this.trace.addResult(p.turnId, { type: 'open_url_result', ok: false, ms: now - p.at });
+    this.trace.finishTurn(p.turnId);
   }
 
   private clearStalePendingTrigger(now: number): void {
@@ -547,18 +599,19 @@ export class Orchestrator {
     if (outcome !== 'muted') this.d.policy.recordOutcome(outcome === 'engaged');
   }
 
-  private mute(until: number, confirmation: string): void {
+  private mute(until: number, confirmation: string, turnId = ''): void {
     this.d.policy.muteUntil(until);
     this.d.memory.setState(MUTED_STATE_KEY, until);
-    this.say(confirmation, 'status');
+    this.sayTraced(confirmation, 'status', turnId);
   }
 
   // ---- chat -------------------------------------------------------------------
 
   /** `intentText` is the user's own raw utterance for THIS turn, or undefined when this reply is not
    * directly speaking for the user (a chip click — see onChip/C1). It's threaded straight through to
-   * chat.ts, the only place a model-proposed action is ever gated. */
-  private async answer(text: string, source: Source, intentText: string | undefined): Promise<void> {
+   * chat.ts, the only place a model-proposed action is ever gated. `turnId` is the decision-trace turn this
+   * reply belongs to, or '' for a chip-derived reply (out of trace scope — see trace.ts). */
+  private async answer(text: string, source: Source, intentText: string | undefined, turnId = ''): Promise<void> {
     const cur = this.d.timeline.current();
     this.d.log.info('chat_ctx', {
       hasCurrent: cur !== undefined,
@@ -574,6 +627,7 @@ export class Orchestrator {
         ...(cur ? { current: cur.msg } : {}),
         incidentMode: isIncident(cur?.msg),
         intentText,
+        turnId,
       });
       this.announceRecoveryIfNeeded();
 
@@ -595,30 +649,36 @@ export class Orchestrator {
       const impliesOpening = reply.text === '' || claimsPendingAction(reply.text);
       const deliveryText = host && impliesOpening ? `Want me to open ${urlAction!.label}?` : reply.text;
 
-      const sayId = this.deliverChatReply({ ...reply, text: deliveryText }, cur?.msg, source, host ? [`Open ${host}`, 'dismiss'] : undefined);
+      const sayId = this.deliverChatReply({ ...reply, text: deliveryText }, cur?.msg, source, host ? [`Open ${host}`, 'dismiss'] : undefined, turnId);
       this.rememberOffer(deliveryText);
 
-      if (reply.action && !needsConfirm) {
-        this.executeModelAction(reply.action, text, source);
+      const executesAction = Boolean(reply.action && !needsConfirm);
+      if (executesAction) {
+        this.executeModelAction(reply.action!, text, source, turnId);
       } else if (host && urlAction && sayId) {
         this.pendingUrlConfirm = { nudgeId: sayId, url: urlAction.url, label: urlAction.label, host, at: this.d.clock() };
       }
+      // An executed action finishes the trace turn later, once its focus_result/open_url_result arrives
+      // (see startFocus/startOpenUrl); anything else (a plain reply, or one awaiting an "Open <host>"
+      // confirm chip that's out of trace scope) has nothing further to wait for.
+      if (!executesAction) this.trace.finishTurn(turnId);
     } catch (err) {
       const wasOnline = this.online;
       this.onModelError(err);
-      if (!(err instanceof ModelUnavailableError)) this.say(TEXT.genericError, 'reply');
-      else if (!wasOnline) this.say(TEXT.offlineReply, 'reply');
+      if (!(err instanceof ModelUnavailableError)) this.sayTraced(TEXT.genericError, 'reply', turnId);
+      else if (!wasOnline) this.sayTraced(TEXT.offlineReply, 'reply', turnId);
+      else this.trace.finishTurn(turnId);
     }
   }
 
   /** Executes a model-proposed action the same way a parsed command would (focus for an app, open_url for a
    * website): `recordUserTurn: false` since chat.reply() already recorded this turn in memory. */
-  private executeModelAction(action: ModelAction, text: string, source: Source): void {
+  private executeModelAction(action: ModelAction, text: string, source: Source, turnId = ''): void {
     const now = this.d.clock();
     if (action.open === 'app') {
-      this.startFocus({ type: 'focus', target: action.target, kind: 'app' }, text, now, source, false);
+      this.startFocus({ type: 'focus', target: action.target, kind: 'app' }, text, now, source, false, turnId);
     } else {
-      this.startOpenUrl({ type: 'open_url', url: action.url, label: action.label }, text, now, source, false);
+      this.startOpenUrl({ type: 'open_url', url: action.url, label: action.label }, text, now, source, false, turnId);
     }
   }
 
@@ -629,32 +689,44 @@ export class Orchestrator {
    * sends no bubble at all — the action's result handler speaks for that turn instead. `extraChips` (M7's
    * "Open <host>"/"dismiss") are appended to a draft-less reply's say. Returns the say's id (for
    * pendingUrlConfirm to correlate the chip click), or undefined when nothing was sent. */
-  private deliverChatReply(reply: ChatReply, current: ContextMsg | undefined, source: Source, extraChips?: readonly string[]): string | undefined {
+  private deliverChatReply(
+    reply: ChatReply,
+    current: ContextMsg | undefined,
+    source: Source,
+    extraChips?: readonly string[],
+    turnId = '',
+  ): string | undefined {
     const speak = this.speakForReply(source);
     if (!reply.draft) {
       this.lastDraft = undefined;
       if (reply.text === '') return undefined;
-      return this.say(reply.text, 'reply', { speak, ...(extraChips ? { chips: extraChips } : {}) });
+      const id = this.say(reply.text, 'reply', { speak, ...(extraChips ? { chips: extraChips } : {}) });
+      this.trace.addSent(turnId, { type: 'say', payload: { text: reply.text, hasDraft: false } });
+      return id;
     }
     const app = current && !current.private ? current.app : undefined;
     if (!app) {
       this.lastDraft = undefined;
-      return this.say(reply.text, 'reply', { draft: reply.draft, speak });
+      const id = this.say(reply.text, 'reply', { draft: reply.draft, speak });
+      this.trace.addSent(turnId, { type: 'say', payload: { text: reply.text, hasDraft: true, draft: reply.draft } });
+      return id;
     }
     const id = this.say(reply.text, 'reply', { draft: reply.draft, draftApp: app, chips: [`paste into ${app}`], speak });
     this.lastDraft = { id, text: reply.draft, app, at: this.d.clock() };
+    this.trace.addSent(turnId, { type: 'say', payload: { text: reply.text, hasDraft: true, draft: reply.draft, draftApp: app } });
     return id;
   }
 
   /** Pastes the current draft, or explains there isn't one (missing or stale). The ONLY entry point for the paste flow. */
-  private triggerPaste(now: number, source: Source): void {
+  private triggerPaste(now: number, source: Source, turnId = ''): void {
     const draft = this.lastDraft;
     if (!draft || now - draft.at >= DRAFT_TTL_MS) {
-      this.say("There's no draft to paste yet.", 'reply');
+      this.sayTraced("There's no draft to paste yet.", 'reply', turnId);
       return;
     }
     const requestId = this.d.newId();
-    this.pendingPaste = { requestId, app: draft.app, source, at: now };
+    this.pendingPaste = { requestId, app: draft.app, source, at: now, turnId };
+    this.trace.addSent(turnId, { type: 'paste', payload: { app: draft.app, text: draft.text } });
     this.d.send({ v: 1, type: 'paste', requestId, text: draft.text, app: draft.app });
   }
 
@@ -662,10 +734,13 @@ export class Orchestrator {
     const p = this.pendingPaste;
     if (!p || p.requestId !== msg.requestId) return;
     this.pendingPaste = undefined;
+    const now = this.d.clock();
     const text = msg.ok
       ? `Pasted into ${p.app} — press Enter to send.`
       : `Couldn't paste into ${p.app}: ${msg.detail ?? 'no text box found'}.`;
     this.say(text, 'reply', { speak: this.speakForCommandConfirmation(p.source) });
+    this.trace.addResult(p.turnId, { type: 'paste_result', ok: msg.ok, ms: now - p.at });
+    this.trace.finishTurn(p.turnId);
   }
 
   private expirePendingPaste(now: number): void {
@@ -673,6 +748,8 @@ export class Orchestrator {
     if (!p || now - p.at < PASTE_TIMEOUT_MS) return;
     this.pendingPaste = undefined;
     this.say("The paste didn't go through.", 'reply', { speak: this.speakForCommandConfirmation(p.source) });
+    this.trace.addResult(p.turnId, { type: 'paste_result', ok: false, ms: now - p.at });
+    this.trace.finishTurn(p.turnId);
   }
 
   // ---- health & mood ----------------------------------------------------------
@@ -771,6 +848,22 @@ export class Orchestrator {
       ...(extra?.draft ? { draft: extra.draft } : {}),
       ...(extra?.draftApp ? { draftApp: extra.draftApp } : {}),
     });
+    return id;
+  }
+
+  /** `say()`, plus recording it as this turn's `sent` and immediately finishing the trace turn — for a
+   * route with no further device round-trip to wait for (mute, clear, "no draft to paste", a model-error
+   * fallback). Routes that DO have one (focus/open_url/paste) record their own `sent`/`result` and finish
+   * later, once that result arrives — see startFocus/startOpenUrl/triggerPaste and their *Result handlers. */
+  private sayTraced(
+    text: string,
+    kind: Extract<SayKind, 'status' | 'reply'>,
+    turnId: string,
+    extra?: { chips?: readonly string[]; draft?: string; draftApp?: string; speak?: boolean },
+  ): string {
+    const id = this.say(text, kind, extra);
+    this.trace.addSent(turnId, { type: 'say', payload: { text, kind } });
+    this.trace.finishTurn(turnId);
     return id;
   }
 }

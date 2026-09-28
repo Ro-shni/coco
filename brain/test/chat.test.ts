@@ -392,4 +392,69 @@ describe('ChatResponder', () => {
       );
     });
   });
+
+  describe('decision trace', () => {
+    const fakeTrace = () => ({
+      startTurn: vi.fn(() => ''),
+      setRoute: vi.fn(),
+      addModelCall: vi.fn(),
+      setExtracted: vi.fn(),
+      setGate: vi.fn(),
+      addSent: vi.fn(),
+      addResult: vi.fn(),
+      finishTurn: vi.fn(),
+      logNudgeDecision: vi.fn(),
+      sweep: vi.fn(),
+    });
+
+    it('records one model_call per model invocation, with n and purpose in order', async () => {
+      const gw = new ScriptedGateway((_, i) => (i === 0 ? 'Great question! Let me know if you need more.' : 'It is Grafana, p99 for supply-prd.'));
+      const trace = fakeTrace();
+      const memory = new Memory(':memory:');
+      const chat = new ChatResponder({ gateway: gw, memory, persona: () => '# persona', userName: 'Roshni', clock: () => 1000, trace });
+      await chat.reply('what is this?', { timeline: 't', incidentMode: false, turnId: 'turn-1' });
+      expect(trace.addModelCall).toHaveBeenCalledTimes(2);
+      expect(trace.addModelCall).toHaveBeenNthCalledWith(1, 'turn-1', { n: 1, purpose: 'reply', ms: 0, rawReply: 'Great question! Let me know if you need more.' });
+      expect(trace.addModelCall).toHaveBeenNthCalledWith(2, 'turn-1', { n: 2, purpose: 'honesty_rewrite', ms: 0, rawReply: 'It is Grafana, p99 for supply-prd.' });
+    });
+
+    it('records the final extracted reply and actionBlockPresent', async () => {
+      const gw = new ScriptedGateway(() => 'It is Grafana, p99 for supply-prd.');
+      const trace = fakeTrace();
+      const memory = new Memory(':memory:');
+      const chat = new ChatResponder({ gateway: gw, memory, persona: () => '# persona', userName: 'Roshni', clock: () => 1000, trace });
+      await chat.reply('what is this?', { timeline: 't', incidentMode: false, turnId: 'turn-1' });
+      expect(trace.setExtracted).toHaveBeenCalledWith('turn-1', {
+        text: 'It is Grafana, p99 for supply-prd.',
+        draft: false,
+        actionBlockPresent: false,
+      });
+      expect(trace.setGate).not.toHaveBeenCalled();
+    });
+
+    it('records an allowed gate for an action the intent gate approved', async () => {
+      const raw = '```action\n{"open":"app","target":"Slack"}\n```\nOpening Slack.';
+      const gw = new ScriptedGateway(() => raw);
+      const trace = fakeTrace();
+      const memory = new Memory(':memory:');
+      const chat = new ChatResponder({ gateway: gw, memory, persona: () => '# persona', userName: 'Roshni', clock: () => 1000, trace });
+      await chat.reply('open slack', { timeline: 't', incidentMode: false, intentText: 'open slack', turnId: 'turn-2' });
+      expect(trace.setGate).toHaveBeenCalledWith('turn-2', { allowed: true, reason: 'imperative user utterance' });
+    });
+
+    it('records a rejected gate when there is no intentText for this turn (e.g. a chip-derived reply)', async () => {
+      const raw = '```action\n{"open":"app","target":"Slack"}\n```\nOpening Slack.';
+      const gw = new ScriptedGateway(() => raw);
+      const trace = fakeTrace();
+      const memory = new Memory(':memory:');
+      const chat = new ChatResponder({ gateway: gw, memory, persona: () => '# persona', userName: 'Roshni', clock: () => 1000, trace });
+      await chat.reply('I clicked "sure"', { timeline: 't', incidentMode: false, turnId: 'turn-3' });
+      expect(trace.setGate).toHaveBeenCalledWith('turn-3', { allowed: false, reason: 'no intentText for this turn (not a direct user utterance)' });
+    });
+
+    it('defaults to a no-op trace and an empty turnId without throwing', async () => {
+      const gw = new ScriptedGateway(() => 'ok.');
+      await expect(make(gw).chat.reply('hi', { timeline: 't', incidentMode: false })).resolves.toEqual({ text: 'ok.', draft: null });
+    });
+  });
 });

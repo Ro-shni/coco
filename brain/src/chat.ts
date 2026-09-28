@@ -6,6 +6,7 @@ import { claimsDraftExists, extractDraft, type ExtractedDraft } from './persona/
 import { CAPABILITY_RULE, describeScreen, wrapUntrusted } from './persona/prompt.js';
 import { checkReply, claimsPendingAction, claimsUnperformedAction } from './persona/selfcheck.js';
 import type { ContextMsg } from './protocol.js';
+import { noopTrace, type DecisionTrace, type TraceModelCallPurpose } from './trace.js';
 
 export interface ChatContext {
   timeline: string;
@@ -16,6 +17,9 @@ export interface ChatContext {
    * said, e.g. a chip-click-derived answer (the prompt quotes the chip label and the original nudge text,
    * both of which can come from untrusted screen content) — an action never executes on such a turn. */
   intentText?: string;
+  /** The decision-trace turnId for this turn (orchestrator.ts's onUtterance started it), or '' when there
+   * isn't one — every DecisionTrace call is a safe no-op on '' regardless of whether tracing is on. */
+  turnId?: string;
 }
 
 export interface ChatReply extends ExtractedDraft {
@@ -51,16 +55,23 @@ export class ChatResponder {
       historyTurns?: number;
       /** Diagnostics only (counts/booleans, never prompt text). Defaults to silent. */
       logger?: Logger;
+      /** Opt-in decision trace (see trace.ts, config debug.trace). Defaults to a no-op. */
+      trace?: DecisionTrace;
     },
   ) {}
 
   async reply(text: string, ctx: ChatContext): Promise<ChatReply> {
     const { gateway, memory } = this.deps;
+    const trace = this.deps.trace ?? noopTrace;
+    const turnId = ctx.turnId ?? '';
     const messages = this.buildMessages(text, ctx);
     let calls = 0;
-    const callModel = async (msgs: ChatMessage[], temperature: number): Promise<string> => {
+    const callModel = async (msgs: ChatMessage[], temperature: number, purpose: TraceModelCallPurpose): Promise<string> => {
       calls++;
-      return (await gateway.chat({ messages: msgs, priority: PRIORITY.user, temperature })).trim();
+      const startedAt = this.deps.clock();
+      const raw = (await gateway.chat({ messages: msgs, priority: PRIORITY.user, temperature })).trim();
+      trace.addModelCall(turnId, { n: calls, purpose, ms: this.deps.clock() - startedAt, rawReply: raw });
+      return raw;
     };
 
     let action: ModelAction | undefined;
@@ -79,12 +90,23 @@ export class ChatResponder {
       const stripped = extractAction(rawText);
       if (stripped.blockPresent) {
         anyBlockPresent = true;
-        action = stripped.action && ctx.intentText !== undefined && intentAllowsAction(ctx.intentText) ? stripped.action : undefined;
+        const intentOk = ctx.intentText !== undefined && intentAllowsAction(ctx.intentText);
+        action = stripped.action && intentOk ? stripped.action : undefined;
+        trace.setGate(turnId, {
+          allowed: action !== undefined,
+          reason: !stripped.action
+            ? 'proposed action was invalid (bad JSON, schema mismatch, or a non-http(s) url)'
+            : ctx.intentText === undefined
+              ? 'no intentText for this turn (not a direct user utterance)'
+              : intentOk
+                ? 'imperative user utterance'
+                : 'utterance did not imperatively ask for an action',
+        });
       }
       return anyBlockPresent && !action && claimsPendingAction(stripped.text) ? NO_ACTION_FALLBACK : stripped.text;
     };
 
-    let raw = await callModel(messages, 0.8);
+    let raw = await callModel(messages, 0.8, 'reply');
     let extracted = extractDraft(raw);
     extracted = { ...extracted, text: applyAction(extracted.text) };
 
@@ -94,6 +116,7 @@ export class ChatResponder {
     // bypassing the honesty-rewrite pipeline below (which would otherwise flag the now-empty text itself).
     if (action && claimsUnperformedAction(extracted.text)) {
       memory.addTurn('user', text, this.deps.clock());
+      trace.setExtracted(turnId, { text: '', draft: extracted.draft !== null, action, actionBlockPresent: anyBlockPresent });
       return { text: '', draft: extracted.draft, action }; // M6: no empty assistant turn stored
     }
 
@@ -113,7 +136,7 @@ export class ChatResponder {
         { role: 'assistant', content: extracted.text },
         { role: 'user', content: `Rewrite that reply fixing: ${check.problems.join('; ')}. Output only the rewritten reply.${keepActionHint}` },
       ];
-      raw = await callModel(rewrite, 0.7);
+      raw = await callModel(rewrite, 0.7, 'honesty_rewrite');
       extracted = extractDraft(raw);
       extracted = { ...extracted, text: applyAction(extracted.text) };
       if (claimsUnperformedAction(extracted.text)) {
@@ -132,7 +155,7 @@ export class ChatResponder {
         { role: 'assistant', content: extracted.text },
         { role: 'user', content: DRAFT_CLAIM_REWRITE_PROMPT },
       ];
-      raw = await callModel(rewrite, 0.7);
+      raw = await callModel(rewrite, 0.7, 'draft_rewrite');
       extracted = extractDraft(raw);
       extracted = { ...extracted, text: applyAction(extracted.text) };
       if (extracted.draft === null) {
@@ -144,6 +167,12 @@ export class ChatResponder {
     const now = this.deps.clock();
     memory.addTurn('user', text, now);
     if (extracted.text !== '') memory.addTurn('assistant', extracted.text, now); // M6: no empty assistant turn stored
+    trace.setExtracted(turnId, {
+      text: extracted.text,
+      draft: extracted.draft !== null,
+      ...(action ? { action } : {}),
+      actionBlockPresent: anyBlockPresent,
+    });
     return action ? { ...extracted, action } : extracted;
   }
 

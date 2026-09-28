@@ -16,7 +16,7 @@ const ConfigSchema = z
     look: z.object({ dwellSec: z.number().min(1), maxPerMinute: z.number().int().min(0).max(10) }),
     user: z.object({ name: z.string(), handles: z.array(z.string()) }),
     voice: z.object({ enabled: z.boolean(), speakNudges: z.boolean(), speakTypedReplies: z.boolean() }),
-    debug: z.object({ logContext: z.boolean() }),
+    debug: z.object({ logContext: z.boolean(), trace: z.boolean() }),
   })
   .refine((c) => c.nudge.tickMaxSec >= c.nudge.tickMinSec, {
     message: 'nudge.tickMaxSec must be >= nudge.tickMinSec',
@@ -32,7 +32,7 @@ export const DEFAULT_CONFIG: CocoConfig = Object.freeze({
   look: { dwellSec: 5, maxPerMinute: 3 },
   user: { name: '', handles: [] },
   voice: { enabled: true, speakNudges: true, speakTypedReplies: false },
-  debug: { logContext: false },
+  debug: { logContext: false, trace: false },
 }) as CocoConfig;
 
 const isPlainObject = (x: unknown): x is Record<string, unknown> =>

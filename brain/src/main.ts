@@ -8,6 +8,7 @@ import { LookPolicy } from './context/look.js';
 import { Timeline } from './context/timeline.js';
 import { TriggerDeduper } from './context/triggers.js';
 import { createLogger } from './logger.js';
+import { createDecisionTrace } from './trace.js';
 import { Memory } from './memory.js';
 import type { ModelGateway } from './model/gateway.js';
 import { OllamaGateway } from './model/ollama.js';
@@ -42,6 +43,9 @@ async function main(): Promise<void> {
   log.info('models', { main: config.models.main, vision: visionGateway === gateway ? config.models.main : (config.models.vision ?? 'none') });
 
   const memory = new Memory(join(dataDir, 'coco.db'));
+  const logsDir = resolve(process.env.COCO_LOGS_DIR ?? join(homedir(), 'Library', 'Logs', 'Coco'));
+  const trace = createDecisionTrace(config.debug.trace, { logsDir, clock: Date.now, newId: randomUUID });
+  if (config.debug.trace) log.info('trace_enabled', { file: 'trace.jsonl' });
   let server: BrainServer | undefined;
   const orchestrator = new Orchestrator({
     send: (m) => server?.send(m),
@@ -52,12 +56,13 @@ async function main(): Promise<void> {
     look: new LookPolicy(config.look.dwellSec * 1000, config.look.maxPerMinute),
     policy: new NudgePolicy({ minGapMs: config.nudge.minGapSec * 1000 }),
     triggers: new TriggerDeduper(),
-    decider: new NudgeDecider({ gateway, visionGateway, persona: () => persona.get(), log }),
-    chat: new ChatResponder({ gateway, memory, persona: () => persona.get(), userName: config.user.name, clock: Date.now, logger: log }),
+    decider: new NudgeDecider({ gateway, visionGateway, persona: () => persona.get(), log, trace }),
+    chat: new ChatResponder({ gateway, memory, persona: () => persona.get(), userName: config.user.name, clock: Date.now, logger: log, trace }),
     memory,
     gateway,
     keyframesEnabled: visionGateway !== undefined,
     log,
+    trace,
   });
 
   let recordPath = process.env.COCO_RECORD;

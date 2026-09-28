@@ -55,11 +55,11 @@ function stripPrefixesPreservingCase(text: string, prefixes: readonly string[]):
   }
 }
 
-/** Strips a trailing "please" and trailing .!? punctuation, in either order. */
+/** Strips trailing "please" / "for me" and trailing .!? punctuation, in any order. */
 function stripTrailing(text: string): string {
   let out = text.trimEnd();
   for (;;) {
-    const next = out.replace(/[.!?]+$/, '').replace(/\s+please$/i, '').trimEnd();
+    const next = out.replace(/[.!?]+$/, '').replace(/\s+(?:please|for me)$/i, '').trimEnd();
     if (next === out) return out;
     out = next;
   }

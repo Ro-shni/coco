@@ -21,3 +21,4 @@ voice:
   speakTypedReplies: false # speak replies to typed chat (voice-utterance replies always speak when enabled)
 debug:
   logContext: false     # never log screen text unless true
+  # trace: true         # opt-in, local-only decision trace log — see README's "Debugging" section
