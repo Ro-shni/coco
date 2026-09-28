@@ -301,6 +301,13 @@ describe('ConnectorManager (scripted / fake transport)', () => {
     expect(transport?.closed).toBe(true);
   });
 
+  it('treats the SDK\'s real UnauthorizedError (whose .name is "Error") as needs_auth', async () => {
+    const { UnauthorizedError } = await import('@modelcontextprotocol/sdk/client/auth.js');
+    const factory: TransportFactory = async () => { throw new UnauthorizedError(); };
+    const { m } = await setup(fixtureCfg(), { transportFactory: factory });
+    expect((await m.ensureConnected('fx')).state).toBe('needs_auth');
+  });
+
   it('I-3: needs_auth backs off like error and is logged (M-3)', async () => {
     const events: { event: string; data?: Record<string, unknown> }[] = [];
     const log: Logger = { info: () => undefined, warn: (event, data) => events.push({ event, data }), error: () => undefined };

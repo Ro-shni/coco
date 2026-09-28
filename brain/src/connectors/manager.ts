@@ -1,7 +1,7 @@
 import { Client } from '@modelcontextprotocol/sdk/client/index.js';
 import { getDefaultEnvironment, StdioClientTransport } from '@modelcontextprotocol/sdk/client/stdio.js';
 import { StreamableHTTPClientTransport } from '@modelcontextprotocol/sdk/client/streamableHttp.js';
-import type { OAuthClientProvider } from '@modelcontextprotocol/sdk/client/auth.js';
+import { UnauthorizedError, type OAuthClientProvider } from '@modelcontextprotocol/sdk/client/auth.js';
 import type { Transport } from '@modelcontextprotocol/sdk/shared/transport.js';
 import { McpError } from '@modelcontextprotocol/sdk/types.js';
 import type { Logger } from '../logger.js';
@@ -260,8 +260,9 @@ export class ConnectorManager {
       // C-1: close the client (which closes its transport, killing a stdio child) on every failure path.
       await client?.close().catch(() => undefined);
       if (e.epoch !== epoch) return; // superseded by a disconnect(); it already recorded the state we want.
-      const name = (err as Error).name;
-      if (name === 'UnauthorizedError') {
+      // The SDK's UnauthorizedError keeps the default name "Error", so match the class (the name check stays for
+      // errors re-thrown across module copies).
+      if (err instanceof UnauthorizedError || (err as Error).name === 'UnauthorizedError') {
         this.fail(cfg.id, e, 'sign-in required', 'needs_auth');
       } else {
         this.fail(cfg.id, e, (err as Error).message.slice(0, 200));
