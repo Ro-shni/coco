@@ -118,7 +118,7 @@ async function main(): Promise<void> {
   const onHttp = studioEnabled
     ? createStudioHandler({
         token: studioToken!,
-        staticDir: fileURLToPath(new URL('./studio/', import.meta.url)),
+        staticDir: fileURLToPath(new URL('./studio-web/', import.meta.url)),
         log,
         sessions: new MemorySessionStore(),
         api: {
