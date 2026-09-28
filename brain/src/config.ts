@@ -17,7 +17,7 @@ const ConfigSchema = z
     user: z.object({ name: z.string(), handles: z.array(z.string()) }),
     voice: z.object({ enabled: z.boolean(), speakNudges: z.boolean(), speakTypedReplies: z.boolean() }),
     debug: z.object({ logContext: z.boolean(), trace: z.boolean() }),
-    connectors: z.object({ scanDirs: z.array(z.string()) }),
+    connectors: z.object({ scanDirs: z.array(z.string()), oauthCallbackPort: z.number().int().min(1024).max(65535) }),
   })
   .refine((c) => c.nudge.tickMaxSec >= c.nudge.tickMinSec, {
     message: 'nudge.tickMaxSec must be >= nudge.tickMinSec',
@@ -34,7 +34,7 @@ export const DEFAULT_CONFIG: CocoConfig = Object.freeze({
   user: { name: '', handles: [] },
   voice: { enabled: true, speakNudges: true, speakTypedReplies: false },
   debug: { logContext: false, trace: false },
-  connectors: { scanDirs: [] },
+  connectors: { scanDirs: [], oauthCallbackPort: 47823 },
 }) as CocoConfig;
 
 const isPlainObject = (x: unknown): x is Record<string, unknown> =>

@@ -24,3 +24,4 @@ debug:
   # trace: true         # opt-in, local-only decision trace log — see README's "Debugging" section
 connectors:
   scanDirs: []          # folders whose .mcp.json files Studio offers to import
+  oauthCallbackPort: 47823  # fixed loopback port for connector sign-in redirects (http://127.0.0.1:<port>/oauth/callback)
