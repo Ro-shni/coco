@@ -108,6 +108,10 @@ export interface CheckInput {
   kind: SayKind;
   incidentMode: boolean;
   maxSentences: number;
+  /** I3 (task 8 fix round 1): skip the "claims an action you did not perform" check — set only when this
+   * turn's ChatContext carries `toolSucceeded` (a confirmed/auto tool run this turn genuinely completed the
+   * thing being claimed, so the claim isn't false). */
+  skipActionClaim?: boolean;
 }
 
 export function countSentences(text: string): number {
@@ -128,7 +132,7 @@ export function checkReply(input: CheckInput): { ok: boolean; problems: string[]
   const sentences = countSentences(text);
   if (sentences > input.maxSentences) problems.push(`too long: ${sentences} sentences (max ${input.maxSentences})`);
   if ((text.match(/!/g) ?? []).length > 1) problems.push('too many exclamation marks (be dry, not dramatic)');
-  const claim = claimsUnperformedAction(text);
+  const claim = input.skipActionClaim ? null : claimsUnperformedAction(text);
   if (claim) {
     problems.push(`claims an action you did not perform: "${claim}" — you cannot send, post, click, type, approve or merge; say so and offer a draft instead`);
   }

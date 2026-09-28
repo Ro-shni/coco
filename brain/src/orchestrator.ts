@@ -1,4 +1,4 @@
-import type { PendingToolCall, ToolLoop } from './agent/loop.js';
+import type { GatherResult, PendingToolCall, ToolLoop, ToolRun } from './agent/loop.js';
 import type { ChatContext, ChatReply } from './chat.js';
 import type { Command } from './commands.js';
 import { parseCommand } from './commands.js';
@@ -55,6 +55,10 @@ export interface OrchestratorDeps {
 export const TOOL_RUN_CHIP = 'Run it';
 export const TOOL_CANCEL_CHIP = 'Cancel';
 export const TOOL_CONFIRM_TTL_MS = 120_000;
+/** I1: how long a spent/expired/superseded tool-confirm nudgeId is remembered, so a stale click on that
+ * exact bubble gets an honest reply instead of falling through to a generic chat turn with no tool result. */
+const CONSUMED_TOOL_CONFIRM_TTL_MS = 10 * 60_000;
+const TOOL_CONFIRM_EXPIRED_TEXT = 'That request expired — ask me again.';
 
 interface PendingNudge {
   id: string;
@@ -176,6 +180,17 @@ function hostOf(url: string): string | undefined {
   }
 }
 
+/** I3: the tool run (if any) this turn actually completed with `result.ok === true` — the last one, since
+ * that's most relevant to what the user just asked. Feeds ChatContext.toolSucceeded, which lets the reply
+ * honestly report a real result instead of being flattened by the unperformed-action honesty check. */
+function lastSuccessfulRun(runs: readonly ToolRun[]): { tool: string; serverId: string } | undefined {
+  for (let i = runs.length - 1; i >= 0; i--) {
+    const run = runs[i]!;
+    if (run.result.ok) return { tool: run.tool, serverId: run.serverId };
+  }
+  return undefined;
+}
+
 export class Orchestrator {
   private activity: ActivityState = 'reading';
   private keyframe: { key: string; jpeg: string; ts: number } | undefined;
@@ -193,6 +208,9 @@ export class Orchestrator {
    * pending call lives only here, in the Brain — the chip message the Body echoes back carries only
    * nudgeId + choice text, never call data (see handleToolChip). */
   private pendingToolConfirm?: { nudgeId: string; call: PendingToolCall; text: string; source: Source; at: number };
+  /** I1: nudgeIds of tool confirms already resolved (run, denied, expired, or superseded by a newer ask),
+   * each remembered for CONSUMED_TOOL_CONFIRM_TTL_MS — see markToolConfirmConsumed/isToolConfirmConsumed. */
+  private readonly consumedToolConfirms = new Map<string, number>();
   private recentTexts: ReadonlyMap<string, string> = new Map();
   private deciding = false;
   private mood: Mood | undefined;
@@ -322,6 +340,9 @@ export class Orchestrator {
   private async onUtterance(text: string, source: Source): Promise<void> {
     const now = this.d.clock();
     const turnId = this.trace.startTurn({ source, text });
+    // I2: any new utterance means the user has moved on from a still-armed write confirm — disarm it and
+    // audit the spoken cancel as 'denied', rather than leaving it runnable off a stale chip for up to 120s.
+    this.clearPendingToolConfirm('denied');
     this.resolveAll('engaged');
     const offer = this.takeOffer(now);
     if (offer && isAffirmation(text)) {
@@ -623,10 +644,17 @@ export class Orchestrator {
   /** `intentText` is the user's own raw utterance for THIS turn, or undefined when this reply is not
    * directly speaking for the user (a chip click — see onChip/C1). It's threaded straight through to
    * chat.ts, the only place a model-proposed action is ever gated. `turnId` is the decision-trace turn this
-   * reply belongs to, or '' for a chip-derived reply (out of trace scope — see trace.ts). `presetToolResults`
-   * lets a post-confirm call (see handleToolChip) hand in the just-run tool's context without gathering
-   * again — gather() only ever runs for a real user utterance (`intentText !== undefined`). */
-  private async answer(text: string, source: Source, intentText: string | undefined, turnId = '', presetToolResults?: string): Promise<void> {
+   * reply belongs to, or '' for a chip-derived reply (out of trace scope — see trace.ts). `preset` lets a
+   * post-tool-confirm call (see handleToolChip) hand in the just-run tool's context/success/memory-skip
+   * without gathering again — gather() only ever runs for a real user utterance (`intentText !== undefined`),
+   * so a preset is never overwritten by a fresh gather on that call. */
+  private async answer(
+    text: string,
+    source: Source,
+    intentText: string | undefined,
+    turnId = '',
+    preset?: { toolResults?: string; toolSucceeded?: { tool: string; serverId: string }; recordUserTurn?: boolean },
+  ): Promise<void> {
     const cur = this.d.timeline.current();
     this.d.log.info('chat_ctx', {
       hasCurrent: cur !== undefined,
@@ -636,20 +664,23 @@ export class Orchestrator {
       ocrChars: cur?.msg.ocrText?.length ?? 0,
       timelineEntries: this.d.timeline.entriesCount(),
     });
-    let toolResults: string | undefined;
+    let toolResults = preset?.toolResults;
+    let toolSucceeded = preset?.toolSucceeded;
     if (this.d.tools && intentText !== undefined) {
       try {
         const gathered = await this.d.tools.gather({ utterance: text, untrustedText: cur?.msg.private ? '' : (cur?.msg.ocrText ?? '') });
         if (gathered.pending) {
-          this.askToolConfirm(gathered.pending, text, source);
+          this.askToolConfirm(gathered.pending, text, source, turnId);
           return;
         }
         toolResults = gathered.toolContext || undefined;
-      } catch {
-        this.d.log.warn('tool_gather_failed');
+        toolSucceeded = lastSuccessfulRun(gathered.runs);
+      } catch (err) {
+        // M7: a class name only (never the error message, which could echo tool args/results) — diagnostics,
+        // not content, per the log constraint.
+        this.d.log.warn('tool_gather_failed', { error: err instanceof Error ? err.name : 'Error' });
       }
     }
-    toolResults = toolResults ?? presetToolResults;
     try {
       const reply = await this.d.chat.reply(text, {
         timeline: this.d.timeline.render(this.d.clock()),
@@ -658,6 +689,8 @@ export class Orchestrator {
         intentText,
         turnId,
         ...(toolResults ? { toolResults } : {}),
+        ...(toolSucceeded ? { toolSucceeded } : {}),
+        ...(preset?.recordUserTurn === false ? { recordUserTurn: false } : {}),
       });
       this.announceRecoveryIfNeeded();
 
@@ -702,25 +735,94 @@ export class Orchestrator {
   }
 
   /** Asks the user to confirm a connector tool call that needs one, via a "Run it"/"Cancel" chip on a plain
-   * say. The pending call is remembered only on `this` (never sent to the Body) — see pendingToolConfirm. */
-  private askToolConfirm(call: PendingToolCall, text: string, source: Source): void {
+   * say. The pending call is remembered only on `this` (never sent to the Body) — see pendingToolConfirm.
+   * M4: the ask line is saved as an assistant turn too, so the history reads as a real exchange even if the
+   * user never answers it (Cancel/expiry/replacement). M5: finishes this turn's trace, via sayTraced. */
+  private askToolConfirm(call: PendingToolCall, text: string, source: Source, turnId = ''): void {
     const line = call.reason === 'untrusted_args'
       ? `That would run ${call.tool} with details taken from your screen — run it?`
       : `I'd need to run ${call.tool} (${call.serverId}) for that. Run it?`;
-    this.d.memory.addTurn('user', text, this.d.clock());
-    const nudgeId = this.say(line, 'reply', { chips: [TOOL_RUN_CHIP, TOOL_CANCEL_CHIP], speak: this.speakForReply(source) });
-    this.pendingToolConfirm = { nudgeId, call, text, source, at: this.d.clock() };
+    const now = this.d.clock();
+    this.d.memory.addTurn('user', text, now);
+    const nudgeId = this.sayTraced(line, 'reply', turnId, { chips: [TOOL_RUN_CHIP, TOOL_CANCEL_CHIP], speak: this.speakForReply(source) });
+    this.d.memory.addTurn('assistant', line, now);
+    this.pendingToolConfirm = { nudgeId, call, text, source, at: now };
   }
 
-  /** Returns true if the chip belonged to a pending tool confirmation (handled here). */
+  /** I1: remembers a tool-confirm nudgeId as spent (run, denied, expired, or superseded), pruning entries
+   * older than CONSUMED_TOOL_CONFIRM_TTL_MS on every call so the map stays small. */
+  private markToolConfirmConsumed(nudgeId: string): void {
+    const now = this.d.clock();
+    this.consumedToolConfirms.set(nudgeId, now);
+    for (const [id, at] of this.consumedToolConfirms) {
+      if (now - at > CONSUMED_TOOL_CONFIRM_TTL_MS) this.consumedToolConfirms.delete(id);
+    }
+  }
+
+  private isToolConfirmConsumed(nudgeId: string): boolean {
+    const at = this.consumedToolConfirms.get(nudgeId);
+    if (at === undefined) return false;
+    if (this.d.clock() - at > CONSUMED_TOOL_CONFIRM_TTL_MS) {
+      this.consumedToolConfirms.delete(nudgeId);
+      return false;
+    }
+    return true;
+  }
+
+  /** I2/M1: clears any pending tool confirm, auditing `decision` and remembering its nudgeId as consumed —
+   * used both by a new utterance (I2, always 'denied') and by TTL expiry (M1, always 'expired'). */
+  private clearPendingToolConfirm(decision: 'denied' | 'expired'): void {
+    const p = this.pendingToolConfirm;
+    if (!p) return;
+    this.pendingToolConfirm = undefined;
+    this.markToolConfirmConsumed(p.nudgeId);
+    this.d.tools?.recordDecision(p.call, decision);
+  }
+
+  /** Returns true if the chip belonged to a tool confirmation — live, or a spent/expired/superseded one
+   * (handled here either way, so nothing ever falls through to a generic model turn with no tool result). */
   private async handleToolChip(id: string, choice: string): Promise<boolean> {
     const p = this.pendingToolConfirm;
-    if (!p || p.nudgeId !== id) return false;
+    if (!p || p.nudgeId !== id) {
+      // I1: a click on a bubble that already ran, was denied/expired, or was superseded by a newer ask.
+      if (!this.isToolConfirmConsumed(id)) return false;
+      this.say(TOOL_CONFIRM_EXPIRED_TEXT, 'reply', { speak: this.speakForReply('chat') });
+      return true;
+    }
     this.pendingToolConfirm = undefined;
-    if (this.d.clock() - p.at > TOOL_CONFIRM_TTL_MS) return true;
-    if (choice === TOOL_RUN_CHIP && this.d.tools) {
-      const res = await this.d.tools.runConfirmed(p.call);
-      await this.answer(p.text, p.source, undefined, '', res.toolContext || undefined);
+    this.markToolConfirmConsumed(id);
+    // M1: a late click that beat pulse() to it is still an expiry, audited and answered the same way.
+    if (this.d.clock() - p.at > TOOL_CONFIRM_TTL_MS) {
+      this.d.tools?.recordDecision(p.call, 'expired');
+      this.say(TOOL_CONFIRM_EXPIRED_TEXT, 'reply', { speak: this.speakForReply(p.source) });
+      return true;
+    }
+    // M6: match every other chip comparison in this file (trimmed + lowercased). Anything other than "run
+    // it" — including a mistyped choice or "shh" — denies; that is the safe default.
+    if (choice.trim().toLowerCase() === TOOL_RUN_CHIP.toLowerCase() && this.d.tools) {
+      let res: GatherResult;
+      try {
+        res = await this.d.tools.runConfirmed(p.call);
+      } catch (err) {
+        // M2: runConfirmed can reject (e.g. ensureConnected/connect rethrowing) — the pending confirm is
+        // already cleared above, so the click must not vanish silently.
+        this.d.log.warn('tool_run_failed', { error: err instanceof Error ? err.name : 'Error' });
+        this.say(`Couldn't run ${p.call.tool} — it failed, and nothing was changed.`, 'reply', { speak: this.speakForReply(p.source) });
+        return true;
+      }
+      if (res.runs.length === 0) {
+        // M3: the tool was switched off between the ask and the click (loop.ts's runConfirmed returns no
+        // runs for an off-autonomy call) — say so, rather than asking the model to answer with no result and
+        // no TOOL_RULE.
+        this.say(`${p.call.tool} is turned off in Studio — nothing ran.`, 'reply', { speak: this.speakForReply(p.source) });
+        return true;
+      }
+      // M4: `p.text`'s user turn was already recorded when the ask was shown — never record it twice.
+      await this.answer(p.text, p.source, undefined, '', {
+        toolResults: res.toolContext || undefined,
+        toolSucceeded: lastSuccessfulRun(res.runs),
+        recordUserTurn: false,
+      });
       return true;
     }
     this.d.tools?.recordDecision(p.call, 'denied');
@@ -730,10 +832,7 @@ export class Orchestrator {
 
   private expirePendingToolConfirm(now: number): void {
     const p = this.pendingToolConfirm;
-    if (p && now - p.at > TOOL_CONFIRM_TTL_MS) {
-      this.pendingToolConfirm = undefined;
-      this.d.tools?.recordDecision(p.call, 'expired');
-    }
+    if (p && now - p.at > TOOL_CONFIRM_TTL_MS) this.clearPendingToolConfirm('expired');
   }
 
   /** Executes a model-proposed action the same way a parsed command would (focus for an app, open_url for a

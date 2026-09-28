@@ -1249,10 +1249,18 @@ function TEXTMuted30(): string {
 
 describe('tools', () => {
   const utter = (text: string) => ({ v: 1 as const, type: 'utterance' as const, text, source: 'chat' as const });
+  const chip = (nudgeId: string, choice: string) => ({ v: 1 as const, type: 'chip' as const, nudgeId, choice });
   const pendingCall = { qualified: 'atlassian__createJiraIssue', serverId: 'atlassian', tool: 'createJiraIssue', args: { summary: 'x' }, reason: 'write_default' };
+  const successfulRun = {
+    qualified: 'atlassian__createJiraIssue', serverId: 'atlassian', tool: 'createJiraIssue', args: { summary: 'x' },
+    result: { ok: true, text: 'created DEVOPS-1', ms: 5 }, decision: 'confirmed' as const,
+  };
   const fakeTools = (gathered: Awaited<ReturnType<NonNullable<OrchestratorDeps['tools']>['gather']>>) => ({
     gather: vi.fn().mockResolvedValue(gathered),
-    runConfirmed: vi.fn().mockResolvedValue({ runs: [], toolContext: '<untrusted source="mcp:atlassian/createJiraIssue">\nok\ncreated DEVOPS-1\n</untrusted>' }),
+    runConfirmed: vi.fn().mockResolvedValue({
+      runs: [successfulRun],
+      toolContext: '<untrusted source="mcp:atlassian/createJiraIssue">\nok\ncreated DEVOPS-1\n</untrusted>',
+    }),
     recordDecision: vi.fn(),
   });
 
@@ -1272,11 +1280,25 @@ describe('tools', () => {
     const ask = s.says().at(-1)!;
     expect(ask.text).toBe("I'd need to run createJiraIssue (atlassian) for that. Run it?");
     expect(ask.chips).toEqual(['Run it', 'Cancel']);
-    await s.o.handle({ v: 1, type: 'chip', nudgeId: ask.nudgeId, choice: 'Run it' });
+    await s.o.handle(chip(ask.nudgeId, 'Run it'));
     expect(tools.runConfirmed).toHaveBeenCalledWith(pendingCall);
+    expect(tools.gather).toHaveBeenCalledTimes(1); // M8: the post-confirm answer must not gather again
     const ctx = s.reply.mock.calls[0]![1];
     expect(ctx.toolResults).toContain('created DEVOPS-1');
     expect(ctx.intentText).toBeUndefined();
+    expect(ctx.toolSucceeded).toEqual({ tool: 'createJiraIssue', serverId: 'atlassian' }); // I3
+    expect(ctx.recordUserTurn).toBe(false); // M4: the ask already recorded this user turn once
+  });
+
+  it('records the ask as an assistant turn, alongside the user turn (M4)', async () => {
+    const tools = fakeTools({ runs: [], pending: pendingCall, toolContext: '' });
+    const s = setup({ tools });
+    await s.o.handle(utter('create a jira issue'));
+    const ask = s.says().at(-1)!;
+    expect(s.memory.recentTurns(5).map((t) => ({ role: t.role, text: t.text }))).toEqual([
+      { role: 'user', text: 'create a jira issue' },
+      { role: 'assistant', text: ask.text },
+    ]);
   });
 
   it('records a denial on Cancel and says so', async () => {
@@ -1284,13 +1306,13 @@ describe('tools', () => {
     const s = setup({ tools });
     await s.o.handle(utter('create a jira issue'));
     const ask = s.says().at(-1)!;
-    await s.o.handle({ v: 1, type: 'chip', nudgeId: ask.nudgeId, choice: 'Cancel' });
+    await s.o.handle(chip(ask.nudgeId, 'Cancel'));
     expect(tools.recordDecision).toHaveBeenCalledWith(pendingCall, 'denied');
     expect(tools.runConfirmed).not.toHaveBeenCalled();
     expect(s.says().at(-1)!.text).toBe('Okay — I won\'t run it.');
   });
 
-  it('expires an unanswered confirm after 2 minutes, and a late click does nothing', async () => {
+  it('expires an unanswered confirm after 2 minutes, and a late click says so (M1) instead of falling through', async () => {
     const tools = fakeTools({ runs: [], pending: pendingCall, toolContext: '' });
     const s = setup({ tools });
     await s.o.handle(utter('create a jira issue'));
@@ -1298,8 +1320,99 @@ describe('tools', () => {
     s.advance(121_000);
     await s.o.pulse();
     expect(tools.recordDecision).toHaveBeenCalledWith(pendingCall, 'expired');
-    await s.o.handle({ v: 1, type: 'chip', nudgeId: ask.nudgeId, choice: 'Run it' });
+    await s.o.handle(chip(ask.nudgeId, 'Run it'));
     expect(tools.runConfirmed).not.toHaveBeenCalled();
+    expect(s.reply).not.toHaveBeenCalled();
+    expect(s.says().at(-1)!.text).toBe('That request expired — ask me again.');
+  });
+
+  it('I1/M1: a click past the 120s TTL but before pulse() also audits expired and says so', async () => {
+    const tools = fakeTools({ runs: [], pending: pendingCall, toolContext: '' });
+    const s = setup({ tools });
+    await s.o.handle(utter('create a jira issue'));
+    const ask = s.says().at(-1)!;
+    s.advance(121_000); // no pulse() in between
+    await s.o.handle(chip(ask.nudgeId, 'Run it'));
+    expect(tools.recordDecision).toHaveBeenCalledWith(pendingCall, 'expired');
+    expect(tools.runConfirmed).not.toHaveBeenCalled();
+    expect(s.says().at(-1)!.text).toBe('That request expired — ask me again.');
+  });
+
+  it('I1: a double click on the same tool-confirm chip runs it once; the second click says it expired', async () => {
+    const tools = fakeTools({ runs: [], pending: pendingCall, toolContext: '' });
+    const s = setup({ tools });
+    await s.o.handle(utter('create a jira issue'));
+    const ask = s.says().at(-1)!;
+    await s.o.handle(chip(ask.nudgeId, 'Run it'));
+    expect(tools.runConfirmed).toHaveBeenCalledTimes(1);
+    await s.o.handle(chip(ask.nudgeId, 'Run it'));
+    expect(tools.runConfirmed).toHaveBeenCalledTimes(1); // still once
+    expect(s.says().at(-1)!.text).toBe('That request expired — ask me again.');
+  });
+
+  it('I2: a new utterance clears a pending confirm (denied); the old chip then says it expired', async () => {
+    const tools = {
+      gather: vi.fn()
+        .mockResolvedValueOnce({ runs: [], pending: pendingCall, toolContext: '' })
+        .mockResolvedValueOnce({ runs: [], toolContext: '' }),
+      runConfirmed: vi.fn(),
+      recordDecision: vi.fn(),
+    };
+    const s = setup({ tools });
+    await s.o.handle(utter('create a jira issue'));
+    const ask = s.says().at(-1)!;
+    await s.o.handle(utter('actually never mind, what is X-1'));
+    expect(tools.recordDecision).toHaveBeenCalledWith(pendingCall, 'denied');
+    await s.o.handle(chip(ask.nudgeId, 'Run it'));
+    expect(tools.runConfirmed).not.toHaveBeenCalled();
+    expect(s.says().at(-1)!.text).toBe('That request expired — ask me again.');
+  });
+
+  it('I1: a second ask supersedes the first — the stale chip expires, the fresh one still runs', async () => {
+    const pendingCall2 = { qualified: 'atlassian__deleteIssue', serverId: 'atlassian', tool: 'deleteIssue', args: {}, reason: 'write_default' };
+    const tools = {
+      gather: vi.fn()
+        .mockResolvedValueOnce({ runs: [], pending: pendingCall, toolContext: '' })
+        .mockResolvedValueOnce({ runs: [], pending: pendingCall2, toolContext: '' }),
+      runConfirmed: vi.fn().mockResolvedValue({
+        runs: [{ qualified: pendingCall2.qualified, serverId: pendingCall2.serverId, tool: pendingCall2.tool, args: {}, result: { ok: true, text: 'deleted', ms: 5 }, decision: 'confirmed' as const }],
+        toolContext: '<untrusted source="mcp:atlassian/deleteIssue">\nok\ndeleted\n</untrusted>',
+      }),
+      recordDecision: vi.fn(),
+    };
+    const s = setup({ tools });
+    await s.o.handle(utter('create a jira issue'));
+    const ask1 = s.says().at(-1)!;
+    await s.o.handle(utter('actually delete this issue instead'));
+    const ask2 = s.says().at(-1)!;
+    expect(tools.recordDecision).toHaveBeenCalledWith(pendingCall, 'denied');
+    await s.o.handle(chip(ask1.nudgeId, 'Run it'));
+    expect(s.says().at(-1)!.text).toBe('That request expired — ask me again.');
+    expect(tools.runConfirmed).not.toHaveBeenCalled();
+    await s.o.handle(chip(ask2.nudgeId, 'Run it'));
+    expect(tools.runConfirmed).toHaveBeenCalledWith(pendingCall2);
+  });
+
+  it('M2: says the run failed, without touching chat.reply, when runConfirmed throws', async () => {
+    const tools = fakeTools({ runs: [], pending: pendingCall, toolContext: '' });
+    tools.runConfirmed.mockRejectedValueOnce(new Error('boom'));
+    const s = setup({ tools });
+    await s.o.handle(utter('create a jira issue'));
+    const ask = s.says().at(-1)!;
+    await s.o.handle(chip(ask.nudgeId, 'Run it'));
+    expect(s.reply).not.toHaveBeenCalled();
+    expect(s.says().at(-1)!.text).toBe("Couldn't run createJiraIssue — it failed, and nothing was changed.");
+  });
+
+  it('M3: says the tool is turned off, without touching chat.reply, when runConfirmed returns no runs', async () => {
+    const tools = fakeTools({ runs: [], pending: pendingCall, toolContext: '' });
+    tools.runConfirmed.mockResolvedValueOnce({ runs: [], toolContext: '' });
+    const s = setup({ tools });
+    await s.o.handle(utter('create a jira issue'));
+    const ask = s.says().at(-1)!;
+    await s.o.handle(chip(ask.nudgeId, 'Run it'));
+    expect(s.reply).not.toHaveBeenCalled();
+    expect(s.says().at(-1)!.text).toBe('createJiraIssue is turned off in Studio — nothing ran.');
   });
 
   it('words the question differently when args came from the screen', async () => {

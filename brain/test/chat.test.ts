@@ -481,4 +481,64 @@ describe('ChatResponder', () => {
       expect(seen[0]!.at(-1)!.content).not.toContain('Looked up');
     });
   });
+
+  describe('toolSucceeded (task 8 fix round 1, I3)', () => {
+    it('keeps a reply that reports a successful tool result instead of the cannot-act fallback', async () => {
+      const gw = new ScriptedGateway(() => "Per Jira, I've created the issue — DEVOPS-1.");
+      const reply = await make(gw).chat.reply('create a jira issue for this bug', {
+        timeline: 't',
+        incidentMode: false,
+        toolResults: '<untrusted source="mcp:atlassian/createJiraIssue">\nok\ncreated DEVOPS-1\n</untrusted>',
+        toolSucceeded: { tool: 'createJiraIssue', serverId: 'atlassian' },
+      });
+      expect(reply.text).toBe("Per Jira, I've created the issue — DEVOPS-1.");
+      expect(gw.calls).toHaveLength(1); // no honesty rewrite triggered by the (true) completion claim
+    });
+
+    it('still rewrites for a reason other than the action claim (e.g. filler), and does not fall back afterward', async () => {
+      const gw = new ScriptedGateway((_, i) =>
+        i === 0 ? "Great question! I've created the issue — DEVOPS-1." : "Per Jira, I've created the issue — DEVOPS-1.",
+      );
+      const reply = await make(gw).chat.reply('create a jira issue', {
+        timeline: 't',
+        incidentMode: false,
+        toolSucceeded: { tool: 'createJiraIssue', serverId: 'atlassian' },
+      });
+      expect(gw.calls).toHaveLength(2); // filler still triggers a rewrite
+      expect(reply.text).toBe("Per Jira, I've created the issue — DEVOPS-1.");
+    });
+
+    it('swaps the capability system line for a tool-aware one', async () => {
+      const gw = new ScriptedGateway(() => 'ok.');
+      await make(gw).chat.reply('hi', { timeline: 't', incidentMode: false, toolSucceeded: { tool: 'createJiraIssue', serverId: 'atlassian' } });
+      const system = gw.calls[0]!.messages[0]!.content;
+      expect(system).toContain("You just ran createJiraIssue via atlassian; report what its result says — never claim anything the result doesn't show.");
+      expect(system).not.toContain('Never offer to send, post, reply, approve, merge, click, or type.');
+    });
+
+    it('keeps the ordinary capability line when toolSucceeded is absent', async () => {
+      const gw = new ScriptedGateway(() => 'ok.');
+      await make(gw).chat.reply('hi', { timeline: 't', incidentMode: false });
+      expect(gw.calls[0]!.messages[0]!.content).toContain('Never offer to send, post, reply, approve, merge, click, or type.');
+    });
+  });
+
+  describe('recordUserTurn (task 8 fix round 1, M4)', () => {
+    it('skips writing the user turn to memory when recordUserTurn is false, but still stores the assistant turn', async () => {
+      const gw = new ScriptedGateway(() => 'Per Jira, done.');
+      const { memory, chat } = make(gw);
+      memory.addTurn('assistant', 'I\'d need to run createJiraIssue (atlassian) for that. Run it?', 1);
+      await chat.reply('create a jira issue', { timeline: 't', incidentMode: false, recordUserTurn: false });
+      const turns = memory.recentTurns(5).map((t) => ({ role: t.role, text: t.text }));
+      expect(turns.filter((t) => t.role === 'user' && t.text === 'create a jira issue')).toHaveLength(0);
+      expect(turns).toContainEqual({ role: 'assistant', text: 'Per Jira, done.' });
+    });
+
+    it('records the user turn as usual when recordUserTurn is omitted', async () => {
+      const gw = new ScriptedGateway(() => 'ok.');
+      const { memory, chat } = make(gw);
+      await chat.reply('hi', { timeline: 't', incidentMode: false });
+      expect(memory.recentTurns(5).map((t) => t.text)).toContain('hi');
+    });
+  });
 });

@@ -22,6 +22,15 @@ export interface ChatContext {
   turnId?: string;
   /** Rendered <untrusted source="mcp:…"> blocks from this turn's tool gather phase (agent/loop.ts), if any. */
   toolResults?: string;
+  /** I3 (task 8 fix round 1): set only when a run THIS TURN (auto or confirmed) actually completed with
+   * `result.ok === true` — swaps the "cannot send/post" capability line for a tool-aware one, and skips the
+   * unperformed-action honesty check for this reply only, so a true "I created DEVOPS-1" (backed by a real
+   * result in toolResults) isn't flattened into CANNOT_ACT_FALLBACK. */
+  toolSucceeded?: { tool: string; serverId: string };
+  /** M4 (task 8 fix round 1): false only for the post-tool-confirm re-answer, whose user turn was already
+   * recorded once when the confirm was asked (orchestrator.ts's askToolConfirm) — skip writing the same
+   * text to memory a second time. Omitted (or true) records the user turn as usual. */
+  recordUserTurn?: boolean;
 }
 
 export interface ChatReply extends ExtractedDraft {
@@ -119,13 +128,17 @@ export class ChatResponder {
     // from the model guessing ahead of it. Drop just that line and return early with the action intact,
     // bypassing the honesty-rewrite pipeline below (which would otherwise flag the now-empty text itself).
     if (action && claimsUnperformedAction(extracted.text)) {
-      memory.addTurn('user', text, this.deps.clock());
+      if (ctx.recordUserTurn !== false) memory.addTurn('user', text, this.deps.clock());
       trace.setExtracted(turnId, { text: '', draft: extracted.draft !== null, action, actionBlockPresent: anyBlockPresent });
       return { text: '', draft: extracted.draft, action }; // M6: no empty assistant turn stored
     }
 
+    // I3: a tool run THIS TURN already completed the thing being claimed — the unperformed-action check
+    // would otherwise flatten a true "I created DEVOPS-1" into CANNOT_ACT_FALLBACK right after a real write.
+    const skipActionClaim = ctx.toolSucceeded !== undefined;
+
     // Honesty check runs on the non-draft text only: the draft is a message the user will send, not a claim Coco is making.
-    const check = checkReply({ text: extracted.text, kind: 'reply', incidentMode: ctx.incidentMode, maxSentences: CHAT_MAX_SENTENCES });
+    const check = checkReply({ text: extracted.text, kind: 'reply', incidentMode: ctx.incidentMode, maxSentences: CHAT_MAX_SENTENCES, skipActionClaim });
     if (!check.ok) {
       // N1: when a pending action survived the first pass, tell the model not to re-propose one — the
       // action itself is unchanged and already being handled; only the wording needs fixing. (The model
@@ -143,7 +156,7 @@ export class ChatResponder {
       raw = await callModel(rewrite, 0.7, 'honesty_rewrite');
       extracted = extractDraft(raw);
       extracted = { ...extracted, text: applyAction(extracted.text) };
-      if (claimsUnperformedAction(extracted.text)) {
+      if (!skipActionClaim && claimsUnperformedAction(extracted.text)) {
         extracted = { text: CANNOT_ACT_FALLBACK, draft: null };
         action = undefined; // the whole reply was replaced with "I can't act" — don't also open something
       }
@@ -169,7 +182,7 @@ export class ChatResponder {
     }
 
     const now = this.deps.clock();
-    memory.addTurn('user', text, now);
+    if (ctx.recordUserTurn !== false) memory.addTurn('user', text, now);
     if (extracted.text !== '') memory.addTurn('assistant', extracted.text, now); // M6: no empty assistant turn stored
     trace.setExtracted(turnId, {
       text: extracted.text,
@@ -181,6 +194,12 @@ export class ChatResponder {
   }
 
   private buildMessages(text: string, ctx: ChatContext): ChatMessage[] {
+    // I3: a successful tool run this turn contradicts the static "never offer to send, post, reply, approve,
+    // merge, click, or type" capability line — swap it for a tool-aware rule instead of leaving the model
+    // reading two contradictory instructions.
+    const capabilityLine = ctx.toolSucceeded
+      ? `- You just ran ${ctx.toolSucceeded.tool} via ${ctx.toolSucceeded.serverId}; report what its result says — never claim anything the result doesn't show.`
+      : `- ${CAPABILITY_RULE}`;
     const system = [
       this.deps.persona(),
       '',
@@ -192,7 +211,7 @@ export class ChatResponder {
       ctx.incidentMode ? '- INCIDENT MODE: no jokes, no emoji.' : '- One dry joke at most, and only if it lands.',
       "- If you don't know, say so in one line.",
       '- The actions you can take are bringing an app or window to the front (launching it if it isn\'t running), and opening a website, which happen automatically when the user asks for them (e.g. "go to Slack", "open youtube"). You cannot type, click, move windows, send messages, or change tabs or channels — say so plainly instead of pretending.',
-      `- ${CAPABILITY_RULE}`,
+      capabilityLine,
       DRAFT_RULE,
       ACTION_RULE,
       ...(ctx.toolResults ? [TOOL_RULE] : []),
