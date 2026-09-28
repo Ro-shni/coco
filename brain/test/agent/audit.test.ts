@@ -24,4 +24,14 @@ describe('AuditLog', () => {
     on.record({ ts: 1, serverId: 's', tool: 't', decision: 'auto', ok: true, ms: 1, resultChars: 1, args: { key: 'K-1' } });
     expect(on.list()[0]!.args).toBe('{"key":"K-1"}');
   });
+
+  it('M4: clamps a caller-supplied limit to 1..1000, and treats a non-finite limit as the 200 default', () => {
+    const a = new AuditLog(db());
+    for (let i = 0; i < 5; i++) a.record({ ts: i, serverId: 's', tool: 't', decision: 'auto', ok: true, ms: 1, resultChars: 1 });
+    expect(a.list({ limit: -5 })).toHaveLength(1);
+    expect(a.list({ limit: 0 })).toHaveLength(1);
+    expect(a.list({ limit: Number.NaN })).toHaveLength(5);
+    expect(a.list({ limit: Number.POSITIVE_INFINITY })).toHaveLength(5);
+    expect(a.list({ limit: 2.9 })).toHaveLength(2);
+  });
 });

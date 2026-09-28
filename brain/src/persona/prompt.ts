@@ -2,9 +2,15 @@ import type { Trigger } from '../context/triggers.js';
 import type { ChatMessage } from '../model/gateway.js';
 import type { ActivityState, ContextMsg } from '../protocol.js';
 
+/** I3: the label can come from an untrusted source (an MCP server's own tool name) — escape so it can never
+ * break out of the `source="…"` attribute or inject a fake closing tag ahead of the real one. */
+function escapeLabel(label: string): string {
+  return label.replace(/&/g, '&amp;').replace(/"/g, '&quot;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
+}
+
 export function wrapUntrusted(label: string, content: string): string {
   const safe = content.replace(/<\/?untrusted/gi, (m) => m.replace('<', '‹'));
-  return `<untrusted source="${label}">\n${safe}\n</untrusted>`;
+  return `<untrusted source="${escapeLabel(label)}">\n${safe}\n</untrusted>`;
 }
 
 export function describeScreen(msg: ContextMsg, maxOcr = 3000): string {

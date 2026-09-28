@@ -4,9 +4,10 @@ import { join } from 'node:path';
 import { describe, expect, it, vi } from 'vitest';
 import { AuditLog } from '../../src/agent/audit.js';
 import { MAX_TOOL_CALLS, ToolLoop } from '../../src/agent/loop.js';
-import type { ConnectorManager } from '../../src/connectors/manager.js';
+import type { ConnectorManager, ToolResult } from '../../src/connectors/manager.js';
 import { ConnectorRegistry } from '../../src/connectors/registry.js';
 import type { ToolInfo } from '../../src/connectors/types.js';
+import type { Logger } from '../../src/logger.js';
 import { silentLogger } from '../../src/logger.js';
 import type { ChatToolsResult, ToolCapableGateway } from '../../src/model/gateway.js';
 
@@ -15,15 +16,18 @@ const tool = (serverId: string, name: string, description: string): ToolInfo => 
 });
 const TOOLS = [tool('atlassian', 'getJiraIssue', 'Get a Jira issue by key'), tool('atlassian', 'createJiraIssue', 'Create a Jira issue')];
 
-function setup(script: ChatToolsResult[]) {
+function setup(
+  script: ChatToolsResult[],
+  opts: { callToolImpl?: (q: string, args: Record<string, unknown>) => Promise<ToolResult>; log?: Logger; tools?: ToolInfo[] } = {},
+) {
   const dir = mkdtempSync(join(tmpdir(), 'coco-loop-'));
   const registry = new ConnectorRegistry(dir);
   const audit = new AuditLog(join(dir, 'coco.db'));
   const chatWithTools = vi.fn(async () => script.shift() ?? { content: 'done', toolCalls: [] });
   const gateway: ToolCapableGateway = { chatWithTools };
-  const callTool = vi.fn(async (q: string) => ({ ok: true, text: `result of ${q}`, ms: 5 }));
-  const manager = { tools: () => TOOLS, callTool } as unknown as ConnectorManager;
-  const loop = new ToolLoop({ gateway, manager, registry, audit, clock: () => 1000, log: silentLogger });
+  const callTool = vi.fn(opts.callToolImpl ?? (async (q: string) => ({ ok: true, text: `result of ${q}`, ms: 5 })));
+  const manager = { tools: () => opts.tools ?? TOOLS, callTool } as unknown as ConnectorManager;
+  const loop = new ToolLoop({ gateway, manager, registry, audit, clock: () => 1000, log: opts.log ?? silentLogger });
   return { loop, chatWithTools, callTool, audit, registry };
 }
 
@@ -88,6 +92,60 @@ describe('ToolLoop.gather', () => {
     const out = await s.loop.gather({ utterance: 'jira issue A-2', untrustedText: '' });
     expect(out.runs.map((r) => r.qualified)).toEqual(['atlassian__getJiraIssue']);
   });
+
+  it('M2: truncates a model-echoed unknown tool name to 64 chars before putting it in a message', async () => {
+    const longName = 'a'.repeat(120);
+    const s = setup([{ content: '', toolCalls: [{ name: longName, arguments: {} }] }]);
+    await s.loop.gather({ utterance: 'jira issue A-2', untrustedText: '' });
+    const second = s.chatWithTools.mock.calls[1]![0] as { messages: { role: string; content: string }[] };
+    const last = second.messages.at(-1)!;
+    expect(last.content).toBe(`error: unknown tool ${'a'.repeat(64)}`);
+    expect(last.content.length).toBeLessThan(longName.length);
+  });
+
+  it('I1: wraps a tool result fed back to the gather model in an untrusted block', async () => {
+    const s = setup([
+      { content: '', toolCalls: [{ name: 'atlassian__getJiraIssue', arguments: { key: 'A-1' } }] },
+      { content: 'done', toolCalls: [] },
+    ]);
+    await s.loop.gather({ utterance: 'jira issue A-1', untrustedText: '' });
+    const second = s.chatWithTools.mock.calls[1]![0] as { messages: { role: string; content: string }[] };
+    expect(second.messages.at(-1)).toMatchObject({
+      role: 'tool',
+      content: '<untrusted source="mcp:atlassian/getJiraIssue">\nok\nresult of atlassian__getJiraIssue\n</untrusted>',
+    });
+  });
+
+  it('I2: forces confirm when a later call copies an earlier tool result from this turn', async () => {
+    const s = setup([
+      { content: '', toolCalls: [{ name: 'atlassian__getJiraIssue', arguments: { key: 'A-1' } }] },
+      { content: '', toolCalls: [{ name: 'atlassian__getJiraIssue', arguments: { key: 'result of atlassian' } }] },
+    ]);
+    const out = await s.loop.gather({ utterance: 'jira issue A-1', untrustedText: '' });
+    expect(s.callTool).toHaveBeenCalledTimes(1);
+    expect(out.runs).toHaveLength(1);
+    expect(out.pending?.reason).toBe('untrusted_args');
+  });
+
+  it('M1: caps processed calls (executed + off + unknown) at 2x the execution budget, in a single model response', async () => {
+    const manyOff = { content: '', toolCalls: Array.from({ length: 10 }, () => ({ name: 'atlassian__getJiraIssue', arguments: {} })) };
+    const s = setup([manyOff]);
+    s.registry.setAutonomy('atlassian__getJiraIssue', 'off');
+    const out = await s.loop.gather({ utterance: 'jira issue please', untrustedText: '' });
+    expect(s.callTool).not.toHaveBeenCalled();
+    expect(out.runs).toEqual([]);
+    expect(s.audit.list()).toHaveLength(MAX_TOOL_CALLS * 2);
+  });
+
+  it('M8: logs tool_gather (with pending) on the confirm path, not just on normal completion', async () => {
+    const events: { event: string; data?: Record<string, unknown> }[] = [];
+    const log: Logger = { info: (event, data) => events.push({ event, data }), warn: () => undefined, error: () => undefined };
+    const s = setup([{ content: '', toolCalls: [{ name: 'atlassian__createJiraIssue', arguments: { summary: 'x' } }] }], { log });
+    const out = await s.loop.gather({ utterance: 'create a jira issue for this', untrustedText: '' });
+    expect(out.pending).toBeDefined();
+    const gathered = events.find((e) => e.event === 'tool_gather');
+    expect(gathered?.data).toMatchObject({ pending: true });
+  });
 });
 
 describe('ToolLoop.runConfirmed', () => {
@@ -97,5 +155,56 @@ describe('ToolLoop.runConfirmed', () => {
     expect(s.callTool).toHaveBeenCalledWith('atlassian__createJiraIssue', { summary: 'x' });
     expect(out.runs[0]!.decision).toBe('confirmed');
     expect(s.audit.list()[0]).toMatchObject({ decision: 'confirmed', ok: true });
+  });
+
+  it('I4: refuses to run a tool that was turned off after the pending chip was shown', async () => {
+    const s = setup([]);
+    s.registry.setAutonomy('atlassian__createJiraIssue', 'off');
+    const out = await s.loop.runConfirmed({ qualified: 'atlassian__createJiraIssue', serverId: 'atlassian', tool: 'createJiraIssue', args: { summary: 'x' }, reason: 'write_default' });
+    expect(s.callTool).not.toHaveBeenCalled();
+    expect(out.runs).toEqual([]);
+    expect(s.audit.list()[0]).toMatchObject({ serverId: 'atlassian', tool: 'createJiraIssue', decision: 'off' });
+  });
+
+  it('I4: refuses a call whose qualified tool no longer exists, and audits it as denied', async () => {
+    const s = setup([]);
+    const out = await s.loop.runConfirmed({ qualified: 'atlassian__deletedTool', serverId: 'atlassian', tool: 'deletedTool', args: {}, reason: 'write_default' });
+    expect(s.callTool).not.toHaveBeenCalled();
+    expect(out.runs).toEqual([]);
+    expect(s.audit.list()[0]).toMatchObject({ serverId: 'atlassian', tool: 'deletedTool', decision: 'denied' });
+  });
+
+  it('I4: audits under the real server/tool from the lookup, ignoring a tampered serverId/tool on the call', async () => {
+    const s = setup([]);
+    const out = await s.loop.runConfirmed({
+      qualified: 'atlassian__createJiraIssue',
+      serverId: 'evil-server',
+      tool: 'evilTool',
+      args: { summary: 'x' },
+      reason: 'write_default',
+    });
+    expect(s.callTool).toHaveBeenCalledWith('atlassian__createJiraIssue', { summary: 'x' });
+    expect(out.runs[0]).toMatchObject({ serverId: 'atlassian', tool: 'createJiraIssue' });
+    expect(s.audit.list()[0]).toMatchObject({ serverId: 'atlassian', tool: 'createJiraIssue', decision: 'confirmed' });
+  });
+});
+
+describe('ToolLoop result truncation (M3)', () => {
+  it('truncates an oversized result to 4000 chars before it reaches the gather prompt or toolContext, regardless of the manager', async () => {
+    const huge = 'x'.repeat(5000);
+    const s = setup(
+      [
+        { content: '', toolCalls: [{ name: 'atlassian__getJiraIssue', arguments: { key: 'A-1' } }] },
+        { content: 'done', toolCalls: [] },
+      ],
+      { callToolImpl: async () => ({ ok: true, text: huge, ms: 5 }) },
+    );
+    const out = await s.loop.gather({ utterance: 'jira issue A-1', untrustedText: '' });
+    expect(out.toolContext.length).toBeLessThan(huge.length);
+    expect(out.toolContext).toContain('truncated');
+    const second = s.chatWithTools.mock.calls[1]![0] as { messages: { role: string; content: string }[] };
+    const last = second.messages.at(-1)!;
+    expect(last.content.length).toBeLessThan(huge.length);
+    expect(last.content).toContain('truncated');
   });
 });

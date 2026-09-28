@@ -11,6 +11,14 @@ const SCHEMA = `CREATE TABLE IF NOT EXISTS tool_audit (
   ok INTEGER, ms INTEGER, result_chars INTEGER, args TEXT);
 CREATE INDEX IF NOT EXISTS tool_audit_ts ON tool_audit(ts);`;
 
+/** M4: a caller-supplied limit (e.g. from a Studio query string) is untrusted input. SQLite treats a negative
+ * LIMIT as unlimited, and a NaN bind value is a hard error, so clamp to [1, 1000] and fall back to the 200
+ * default for anything non-finite. */
+function clampLimit(limit: number | undefined): number {
+  if (limit === undefined || !Number.isFinite(limit)) return 200;
+  return Math.max(1, Math.min(Math.trunc(limit), 1000));
+}
+
 export class AuditLog {
   private readonly db: DatabaseSync;
   constructor(dbPath: string, private readonly opts: { storeArgs?: boolean } = {}) {
@@ -33,7 +41,7 @@ export class AuditLog {
     if (opts.serverId) { where.push('server_id = ?'); params.push(opts.serverId); }
     if (opts.decision) { where.push('decision = ?'); params.push(opts.decision); }
     const sql = `SELECT * FROM tool_audit ${where.length ? `WHERE ${where.join(' AND ')}` : ''} ORDER BY ts DESC, id DESC LIMIT ?`;
-    const rows = this.db.prepare(sql).all(...params, Math.min(opts.limit ?? 200, 1000)) as Record<string, unknown>[];
+    const rows = this.db.prepare(sql).all(...params, clampLimit(opts.limit)) as Record<string, unknown>[];
     return rows.map((r) => ({
       id: Number(r.id), ts: Number(r.ts), serverId: String(r.server_id), tool: String(r.tool), decision: r.decision as AuditDecision,
       ok: r.ok === null ? null : Number(r.ok) === 1, ms: r.ms === null ? null : Number(r.ms),

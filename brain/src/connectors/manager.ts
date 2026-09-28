@@ -14,6 +14,9 @@ export type TransportFactory = (cfg: ServerConfig, secrets: { env: Record<string
 
 const MAX_RESULT_CHARS = 4000;
 const TRUNC = '…[truncated]';
+/** I3: a name outside this shape (e.g. containing `"`, `<`, `>`, newlines) could break out of the
+ * `<untrusted source="mcp:<server>/<tool>">` wrapper the tool loop puts results in. Never list, offer, or run it. */
+const VALID_TOOL_NAME = /^[A-Za-z0-9_.-]{1,64}$/;
 const BACKOFF_MIN_MS = 30_000;
 const BACKOFF_MAX_MS = 600_000;
 /** M-1: only reset the back-off multiplier once a connection has stayed up at least this long. */
@@ -238,14 +241,20 @@ export class ConnectorManager {
       e.client = client;
       this.setState(e, 'connected');
       e.connectedAt = this.deps.clock();
-      e.tools = listed.tools.map((t) => ({
+      const validTools = listed.tools.filter((t) => VALID_TOOL_NAME.test(t.name));
+      const droppedInvalidNames = listed.tools.length - validTools.length;
+      e.tools = validTools.map((t) => ({
         serverId: cfg.id,
         name: t.name,
         qualified: qualify(cfg.id, t.name),
         description: (t.description ?? '').slice(0, 500),
         inputSchema: (t.inputSchema ?? { type: 'object' }) as Record<string, unknown>,
       }));
-      this.deps.log.info('connector_connected', { id: cfg.id, tools: e.tools.length });
+      this.deps.log.info('connector_connected', {
+        id: cfg.id,
+        tools: e.tools.length,
+        ...(droppedInvalidNames > 0 ? { droppedInvalidNames } : {}),
+      });
     } catch (err) {
       // C-1: close the client (which closes its transport, killing a stdio child) on every failure path.
       await client?.close().catch(() => undefined);
