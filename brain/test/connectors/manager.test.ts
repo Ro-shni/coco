@@ -267,6 +267,25 @@ describe('ConnectorManager (scripted / fake transport)', () => {
     expect(connected?.data).toMatchObject({ id: 'fx', tools: 1, droppedInvalidNames: 2 });
   });
 
+  it('R1-M3: keeps a 100-char tool name and drops a 129-char one (MCP guidance raises the limit to 128), logging the count with the server id', async () => {
+    const logged: { event: string; data?: Record<string, unknown> }[] = [];
+    const log: Logger = { info: (event, data) => logged.push({ event, data }), warn: () => undefined, error: () => undefined };
+    const name100 = 'a'.repeat(100);
+    const name129 = 'b'.repeat(129);
+    const factory: TransportFactory = async () =>
+      new ScriptedTransport({
+        toolsOverride: [
+          { name: name100, description: '', inputSchema: { type: 'object' } },
+          { name: name129, description: '', inputSchema: { type: 'object' } },
+        ],
+      });
+    const { m } = await setup(fixtureCfg(), { transportFactory: factory, log });
+    await m.ensureConnected('fx');
+    expect(m.tools().map((t) => t.name)).toEqual([name100]);
+    const connected = logged.find((l) => l.event === 'connector_connected');
+    expect(connected?.data).toMatchObject({ id: 'fx', tools: 1, droppedInvalidNames: 1 });
+  });
+
   it('I-2: disconnect racing a still-connecting server leaves it disconnected and closes the transport', async () => {
     let transport: ScriptedTransport | undefined;
     const factory: TransportFactory = async () => {

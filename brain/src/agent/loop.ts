@@ -57,9 +57,12 @@ export class ToolLoop {
       for (const call of res.toolCalls) {
         if (calls >= MAX_TOOL_CALLS || processed >= MAX_PROCESSED_CALLS) break;
         processed++;
+        // R1-M1: a model-echoed name has no inherent length limit; bound it in every tool message, not just the
+        // unknown-tool error text.
+        const echoedName = call.name.slice(0, MAX_ECHOED_NAME_CHARS);
         const info = tools.find((t) => t.qualified === call.name);
         if (!info) {
-          messages.push({ role: 'tool', tool_name: call.name, content: `error: unknown tool ${call.name.slice(0, MAX_ECHOED_NAME_CHARS)}` });
+          messages.push({ role: 'tool', tool_name: echoedName, content: `error: unknown tool ${echoedName}` });
           continue;
         }
         // I2: an argument copied from a tool result returned EARLIER THIS TURN must force confirm, exactly like
@@ -68,7 +71,7 @@ export class ToolLoop {
         const d = decide({ qualified: info.qualified, toolName: info.name, args: call.arguments, override: this.deps.registry.autonomy(info.qualified), untrustedText: untrustedSoFar });
         if (d.mode === 'off') {
           this.deps.audit.record({ ts: this.deps.clock(), serverId: info.serverId, tool: info.name, decision: 'off', ok: null, ms: null, resultChars: null });
-          messages.push({ role: 'tool', tool_name: call.name, content: OFF_MESSAGE });
+          messages.push({ role: 'tool', tool_name: echoedName, content: OFF_MESSAGE });
           continue;
         }
         if (d.mode === 'confirm') {
@@ -81,7 +84,7 @@ export class ToolLoop {
         runs.push(run);
         // I1: fed back to the GATHER model as untrusted data, exactly like the reply-phase toolContext — a tool
         // result is never allowed to look like an instruction to the model that is deciding what to call next.
-        messages.push({ role: 'tool', tool_name: call.name, content: this.wrapResult(run) });
+        messages.push({ role: 'tool', tool_name: echoedName, content: this.wrapResult(run) });
       }
     }
     this.deps.log.info('tool_gather', { offered: tools.length, runs: runs.length });
@@ -93,10 +96,22 @@ export class ToolLoop {
     // it and the user clicking "Run") or, if it round-trips through a client, tampered. Never trust `call`'s own
     // serverId/tool — re-resolve the tool by qualified name and take serverId/tool from that lookup, and re-check
     // the current autonomy override before running anything.
+    //
+    // R1-I1: `manager.tools()` only lists tools for servers that are CURRENTLY connected. If the server dropped
+    // during the 120s confirm window (idle disconnect, transport close, crashed stdio child), looking it up before
+    // trying to reconnect would read the user's explicit confirmation as if they had denied it. Try to reconnect,
+    // using the serverId embedded in the qualified name (never the caller-supplied `call.serverId`), before giving up.
+    const serverId = this.serverIdOf(call.qualified);
+    if (serverId) await this.deps.manager.ensureConnected(serverId);
     const info = this.deps.manager.tools().find((t) => t.qualified === call.qualified);
     if (!info) {
-      this.deps.audit.record({ ts: this.deps.clock(), serverId: call.serverId, tool: call.tool, decision: 'denied', ok: false, ms: null, resultChars: null });
-      return { runs: [], toolContext: '' };
+      // Still missing after trying to reconnect: a real unavailability (server down, or the tool genuinely gone),
+      // never the user's own "Deny" — record it as a failed confirmed call, with a result the orchestrator/reply
+      // pipeline can surface, so the user learns nothing ran instead of the request silently vanishing.
+      const result: ToolResult = { ok: false, text: `${call.tool} is unavailable right now — nothing was changed.`, ms: 0 };
+      const run: ToolRun = { qualified: call.qualified, serverId, tool: call.tool, args: call.args, result, decision: 'confirmed' };
+      this.deps.audit.record({ ts: this.deps.clock(), serverId, tool: call.tool, decision: 'confirmed', ok: false, ms: null, resultChars: result.text.length });
+      return { runs: [run], toolContext: this.renderContext([run]) };
     }
     if (this.deps.registry.autonomy(info.qualified) === 'off') {
       this.deps.audit.record({ ts: this.deps.clock(), serverId: info.serverId, tool: info.name, decision: 'off', ok: null, ms: null, resultChars: null });
@@ -118,5 +133,11 @@ export class ToolLoop {
     const result = await this.deps.manager.callTool(qualified, args);
     this.deps.audit.record({ ts: this.deps.clock(), serverId, tool, decision, ok: result.ok, ms: result.ms, resultChars: result.text.length, args });
     return { qualified, serverId, tool, args, result, decision };
+  }
+
+  /** The serverId prefix of a qualified tool name (`<serverId>__<tool>`), same split rule as `qualify()`/`ConnectorManager.callTool`. Never derived from caller-supplied data. */
+  private serverIdOf(qualified: string): string {
+    const sep = qualified.indexOf('__');
+    return sep === -1 ? '' : qualified.slice(0, sep);
   }
 }

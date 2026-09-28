@@ -15,8 +15,9 @@ export type TransportFactory = (cfg: ServerConfig, secrets: { env: Record<string
 const MAX_RESULT_CHARS = 4000;
 const TRUNC = '…[truncated]';
 /** I3: a name outside this shape (e.g. containing `"`, `<`, `>`, newlines) could break out of the
- * `<untrusted source="mcp:<server>/<tool>">` wrapper the tool loop puts results in. Never list, offer, or run it. */
-const VALID_TOOL_NAME = /^[A-Za-z0-9_.-]{1,64}$/;
+ * `<untrusted source="mcp:<server>/<tool>">` wrapper the tool loop puts results in. Never list, offer, or run it.
+ * R1-M3: 128 chars, matching MCP's own tool-name length guidance, rather than an arbitrary stricter 64. */
+const VALID_TOOL_NAME = /^[A-Za-z0-9_.-]{1,128}$/;
 const BACKOFF_MIN_MS = 30_000;
 const BACKOFF_MAX_MS = 600_000;
 /** M-1: only reset the back-off multiplier once a connection has stayed up at least this long. */

@@ -18,7 +18,15 @@ const TOOLS = [tool('atlassian', 'getJiraIssue', 'Get a Jira issue by key'), too
 
 function setup(
   script: ChatToolsResult[],
-  opts: { callToolImpl?: (q: string, args: Record<string, unknown>) => Promise<ToolResult>; log?: Logger; tools?: ToolInfo[] } = {},
+  opts: {
+    callToolImpl?: (q: string, args: Record<string, unknown>) => Promise<ToolResult>;
+    log?: Logger;
+    tools?: ToolInfo[];
+    /** R1-I1: simulate a server whose tools() is empty until ensureConnected() has been called. */
+    startDisconnected?: boolean;
+    /** R1-I1: ensureConnected() is called, but the server never actually comes back. */
+    staysDisconnected?: boolean;
+  } = {},
 ) {
   const dir = mkdtempSync(join(tmpdir(), 'coco-loop-'));
   const registry = new ConnectorRegistry(dir);
@@ -26,9 +34,15 @@ function setup(
   const chatWithTools = vi.fn(async () => script.shift() ?? { content: 'done', toolCalls: [] });
   const gateway: ToolCapableGateway = { chatWithTools };
   const callTool = vi.fn(opts.callToolImpl ?? (async (q: string) => ({ ok: true, text: `result of ${q}`, ms: 5 })));
-  const manager = { tools: () => opts.tools ?? TOOLS, callTool } as unknown as ConnectorManager;
+  const allTools = opts.tools ?? TOOLS;
+  let connected = !opts.startDisconnected;
+  const ensureConnected = vi.fn(async (id: string) => {
+    if (!opts.staysDisconnected) connected = true;
+    return { id, state: connected ? ('connected' as const) : ('error' as const), toolCount: connected ? allTools.length : 0, since: 0 };
+  });
+  const manager = { tools: () => (connected ? allTools : []), callTool, ensureConnected } as unknown as ConnectorManager;
   const loop = new ToolLoop({ gateway, manager, registry, audit, clock: () => 1000, log: opts.log ?? silentLogger });
-  return { loop, chatWithTools, callTool, audit, registry };
+  return { loop, chatWithTools, callTool, ensureConnected, audit, registry };
 }
 
 describe('ToolLoop.gather', () => {
@@ -97,10 +111,29 @@ describe('ToolLoop.gather', () => {
     const longName = 'a'.repeat(120);
     const s = setup([{ content: '', toolCalls: [{ name: longName, arguments: {} }] }]);
     await s.loop.gather({ utterance: 'jira issue A-2', untrustedText: '' });
-    const second = s.chatWithTools.mock.calls[1]![0] as { messages: { role: string; content: string }[] };
+    const second = s.chatWithTools.mock.calls[1]![0] as { messages: { role: string; content: string; tool_name?: string }[] };
     const last = second.messages.at(-1)!;
     expect(last.content).toBe(`error: unknown tool ${'a'.repeat(64)}`);
     expect(last.content.length).toBeLessThan(longName.length);
+    expect(last.tool_name).toBe('a'.repeat(64));
+  });
+
+  it('R1-M1: bounds tool_name to 64 chars on every tool message, not just an unknown name', async () => {
+    const longName = `get${'x'.repeat(97)}`;
+    const longTool = tool('atlassian', longName, 'a tool with a very long name');
+    const s = setup(
+      [
+        { content: '', toolCalls: [{ name: longTool.qualified, arguments: { key: 'A-1' } }] },
+        { content: 'done', toolCalls: [] },
+      ],
+      { tools: [longTool] },
+    );
+    await s.loop.gather({ utterance: 'a tool with a very long name', untrustedText: '' });
+    const second = s.chatWithTools.mock.calls[1]![0] as { messages: { role: string; content: string; tool_name?: string }[] };
+    const last = second.messages.at(-1)!;
+    expect(last.tool_name).toBe(longTool.qualified.slice(0, 64));
+    expect(last.tool_name!.length).toBe(64);
+    expect(last.tool_name!.length).toBeLessThan(longTool.qualified.length);
   });
 
   it('I1: wraps a tool result fed back to the gather model in an untrusted block', async () => {
@@ -166,12 +199,35 @@ describe('ToolLoop.runConfirmed', () => {
     expect(s.audit.list()[0]).toMatchObject({ serverId: 'atlassian', tool: 'createJiraIssue', decision: 'off' });
   });
 
-  it('I4: refuses a call whose qualified tool no longer exists, and audits it as denied', async () => {
+  it('R1-I1: a call whose qualified tool no longer exists (even after trying to reconnect) is audited confirmed+ok:false, never denied', async () => {
     const s = setup([]);
     const out = await s.loop.runConfirmed({ qualified: 'atlassian__deletedTool', serverId: 'atlassian', tool: 'deletedTool', args: {}, reason: 'write_default' });
+    expect(s.ensureConnected).toHaveBeenCalledWith('atlassian');
     expect(s.callTool).not.toHaveBeenCalled();
-    expect(out.runs).toEqual([]);
-    expect(s.audit.list()[0]).toMatchObject({ serverId: 'atlassian', tool: 'deletedTool', decision: 'denied' });
+    expect(out.runs[0]).toMatchObject({ serverId: 'atlassian', tool: 'deletedTool', decision: 'confirmed', result: { ok: false } });
+    expect(s.audit.list()[0]).toMatchObject({ serverId: 'atlassian', tool: 'deletedTool', decision: 'confirmed', ok: false });
+  });
+
+  it('R1-I1: reconnects a server whose connection dropped during the confirm window, then executes the call', async () => {
+    const s = setup([], { startDisconnected: true });
+    const out = await s.loop.runConfirmed({ qualified: 'atlassian__createJiraIssue', serverId: 'atlassian', tool: 'createJiraIssue', args: { summary: 'x' }, reason: 'write_default' });
+    expect(s.ensureConnected).toHaveBeenCalledWith('atlassian');
+    expect(s.callTool).toHaveBeenCalledWith('atlassian__createJiraIssue', { summary: 'x' });
+    expect(out.runs[0]).toMatchObject({ decision: 'confirmed', result: { ok: true } });
+    expect(s.audit.list()[0]).toMatchObject({ decision: 'confirmed', ok: true });
+  });
+
+  it('R1-I1: a server that stays unavailable after the reconnect attempt is audited confirmed+ok:false, with a surfaceable message, never denied', async () => {
+    const s = setup([], { startDisconnected: true, staysDisconnected: true });
+    const out = await s.loop.runConfirmed({ qualified: 'atlassian__createJiraIssue', serverId: 'atlassian', tool: 'createJiraIssue', args: { summary: 'x' }, reason: 'write_default' });
+    expect(s.ensureConnected).toHaveBeenCalledWith('atlassian');
+    expect(s.callTool).not.toHaveBeenCalled();
+    expect(out.runs[0]).toMatchObject({
+      serverId: 'atlassian',
+      decision: 'confirmed',
+      result: { ok: false, text: 'createJiraIssue is unavailable right now — nothing was changed.' },
+    });
+    expect(s.audit.list()[0]).toMatchObject({ serverId: 'atlassian', tool: 'createJiraIssue', decision: 'confirmed', ok: false });
   });
 
   it('I4: audits under the real server/tool from the lookup, ignoring a tampered serverId/tool on the call', async () => {
