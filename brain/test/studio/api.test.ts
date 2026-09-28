@@ -8,12 +8,13 @@ import { ConnectorRegistry } from '../../src/connectors/registry.js';
 import { MemorySecretStore, secretKey } from '../../src/connectors/secrets.js';
 import { handleApi, type ApiDeps } from '../../src/studio/api.js';
 
-function setup() {
+function setup(extraServers: Record<string, unknown> = {}) {
   const root = mkdtempSync(join(tmpdir(), 'coco-api-'));
   const claudeJsonPath = join(root, 'claude.json');
   writeFileSync(claudeJsonPath, JSON.stringify({ mcpServers: {
     'kubectl-readonly': { type: 'stdio', command: '/usr/bin/python3', args: ['--read-only'], env: { KUBECONFIG: '/secret/path' } },
     bifrost: { type: 'http', url: 'http://ai-gateway.prd.meesho.int/mcp', headers: { Authorization: 'Bearer sk-SECRET' } },
+    ...extraServers,
   } }));
   const registry = new ConnectorRegistry(root);
   const secrets = new MemorySecretStore();
@@ -74,6 +75,31 @@ describe('Studio API', () => {
     const res = await s.call('POST', '/api/discovery/import', { key, confirm: true });
     expect(res.status).toBe(500);
     expect(await s.secrets.get(secretKey('kubectl-readonly', 'KUBECONFIG'))).toBeUndefined();
+  });
+
+  it('rejects an import whose secret values contain control characters, before any write (N2)', async () => {
+    const s = setup({ bad: { type: 'stdio', command: '/usr/bin/tool', args: [], env: { TOKEN: 'bad\nvalue' } } });
+    const key = ((await s.call('GET', '/api/discovery')).json as { servers: { name: string; key: string }[] }).servers.find((x) => x.name === 'bad')!.key;
+    const res = await s.call('POST', '/api/discovery/import', { key, confirm: true });
+    expect(res.status).toBe(400);
+    expect(s.registry.list()).toEqual([]);
+    expect(await s.secrets.get(secretKey('bad', 'TOKEN'))).toBeUndefined();
+  });
+
+  it('rolls back already-stored secrets if a later secret write fails during import (N2)', async () => {
+    const s = setup({ multi: { type: 'stdio', command: '/usr/bin/tool', args: [], env: { A: '1', B: '2' } } });
+    const key = ((await s.call('GET', '/api/discovery')).json as { servers: { name: string; key: string }[] }).servers.find((x) => x.name === 'multi')!.key;
+    let calls = 0;
+    const realSet = s.secrets.set.bind(s.secrets);
+    vi.spyOn(s.secrets, 'set').mockImplementation(async (k: string, v: string) => {
+      calls += 1;
+      if (calls === 2) throw new Error('keychain write failed (1)');
+      return realSet(k, v);
+    });
+    const res = await s.call('POST', '/api/discovery/import', { key, confirm: true });
+    expect(res.status).toBe(500);
+    expect(s.registry.list()).toEqual([]);
+    expect(await s.secrets.get(secretKey('multi', 'A'))).toBeUndefined();
   });
 
   it('connectors list shows tools with their effective mode', async () => {
@@ -208,5 +234,54 @@ describe('Studio API', () => {
 
   it('404s unknown routes', async () => {
     expect((await setup().call('GET', '/api/nope')).status).toBe(404);
+  });
+});
+
+describe('catalog routes', () => {
+  it('lists catalog entries with added flags and adds one with confirm', async () => {
+    const s = setup();
+    const before = (await s.call('GET', '/api/catalog')).json as { id: string; added: boolean }[];
+    expect(before.find((e) => e.id === 'atlassian')!.added).toBe(false);
+    expect((await s.call('POST', '/api/catalog/atlassian/add', {})).status).toBe(400);
+    expect((await s.call('POST', '/api/catalog/atlassian/add', { confirm: true })).json).toEqual({ id: 'atlassian' });
+    const after = (await s.call('GET', '/api/catalog')).json as { id: string; added: boolean }[];
+    expect(after.find((e) => e.id === 'atlassian')!.added).toBe(true);
+  });
+
+  it('refuses Slack without a Client ID', async () => {
+    const s = setup();
+    expect((await s.call('POST', '/api/catalog/slack/add', { confirm: true })).status).toBe(400);
+  });
+});
+
+describe('connector auth route', () => {
+  it('ensures the connection and omits authorizationUrl when there is no pending sign-in', async () => {
+    const s = setup();
+    await s.call('POST', '/api/catalog/atlassian/add', { confirm: true });
+    const res = await s.call('POST', '/api/connectors/atlassian/auth');
+    expect(s.manager.ensureConnected).toHaveBeenCalledWith('atlassian');
+    expect(res.json).toEqual({ state: 'connected' });
+  });
+
+  it('surfaces the pending authorization URL when oauth reports one', async () => {
+    const root = mkdtempSync(join(tmpdir(), 'coco-api-auth-'));
+    const claudeJsonPath = join(root, 'claude.json');
+    writeFileSync(claudeJsonPath, JSON.stringify({ mcpServers: {} }));
+    const registry = new ConnectorRegistry(root);
+    const secrets = new MemorySecretStore();
+    const audit = new AuditLog(join(root, 'coco.db'));
+    const manager = {
+      statuses: () => [],
+      tools: () => [],
+      ensureConnected: vi.fn(async (id: string) => ({ id, state: 'needs_auth', toolCount: 0, since: 0 })),
+    } as unknown as ConnectorManager;
+    const deps: ApiDeps = {
+      registry, manager, secrets, audit, health: async () => true, models: { main: 'm', vision: 'v' },
+      claudeJsonPath, scanDirs: () => [], addScanDir: () => undefined, clock: () => 42,
+      oauth: { pendingUrl: (id) => (id === 'atlassian' ? 'https://auth.atlassian.com/authorize?state=1' : undefined) },
+    };
+    await handleApi({ method: 'POST', path: '/api/catalog/atlassian/add', query: new URLSearchParams(), body: { confirm: true } }, deps);
+    const res = await handleApi({ method: 'POST', path: '/api/connectors/atlassian/auth', query: new URLSearchParams(), body: undefined }, deps);
+    expect(res.json).toEqual({ state: 'needs_auth', authorizationUrl: 'https://auth.atlassian.com/authorize?state=1' });
   });
 });

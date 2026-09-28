@@ -1,0 +1,22 @@
+[
+  { "id": "atlassian", "name": "Atlassian (Jira + Confluence)", "description": "Search and read Jira issues and Confluence pages.",
+    "transport": "http", "url": "https://mcp.atlassian.com/v1/mcp", "auth": "oauth",
+    "setupNotes": "Sign in with your Atlassian account in the browser. Your org admin may need to allow the Atlassian MCP app.",
+    "docsUrl": "https://support.atlassian.com/atlassian-rovo-mcp-server/" },
+  { "id": "slack", "name": "Slack", "description": "Search messages, read channels, threads and DMs.",
+    "transport": "http", "url": "https://mcp.slack.com/mcp", "auth": "oauth", "needsClientId": true,
+    "setupNotes": "Needs an internal Slack app for your workspace, approved by a Slack admin. Create it from the manifest in Coco's README, then paste its Client ID here.",
+    "docsUrl": "https://docs.slack.dev/ai/mcp-server" },
+  { "id": "github", "name": "GitHub", "description": "Issues, pull requests, code search.",
+    "transport": "http", "url": "https://api.githubcopilot.com/mcp/", "auth": "headers", "headerNames": ["Authorization"],
+    "setupNotes": "Create a fine-grained personal access token, then enter it as: Bearer <token>.",
+    "docsUrl": "https://github.com/github/github-mcp-server" },
+  { "id": "grafana", "name": "Grafana", "description": "Dashboards, Prometheus queries, alerts.",
+    "transport": "stdio", "command": "mcp-grafana", "args": [], "auth": "env", "envNames": ["GRAFANA_URL", "GRAFANA_SERVICE_ACCOUNT_TOKEN"],
+    "setupNotes": "Install the mcp-grafana binary first (brew or release download). Never point it at a production Grafana you aren't allowed to query.",
+    "docsUrl": "https://github.com/grafana/mcp-grafana" },
+  { "id": "filesystem", "name": "Files (read a folder)", "description": "Read files in folders you choose.",
+    "transport": "stdio", "command": "npx", "args": ["-y", "@modelcontextprotocol/server-filesystem@2026.8.31"], "argsHint": "Add one or more absolute folder paths",
+    "auth": "none", "setupNotes": "Only the folders you add are visible to Coco.",
+    "docsUrl": "https://github.com/modelcontextprotocol/servers/tree/main/src/filesystem" }
+]

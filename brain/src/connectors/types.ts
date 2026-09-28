@@ -14,6 +14,7 @@ export const ServerConfig = z.object({
   source: z.enum(['imported', 'catalog', 'custom']),
   readOnly: z.boolean().default(false),                    // informational ("--read-only" etc.)
   importKey: z.string().optional(),                        // stable dedupe key from discovery, used to track already-imported servers
+  oauthClientId: z.string().max(200).optional(),            // overrides dynamic client registration (e.g. Slack, which has no DCR)
 }).refine((c) => (c.transport === 'stdio' ? !!c.command : !!c.url), { message: 'stdio needs command; http needs url' });
 export type ServerConfig = z.infer<typeof ServerConfig>;
 export type AutonomyMode = 'auto' | 'confirm' | 'off';

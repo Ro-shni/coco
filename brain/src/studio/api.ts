@@ -3,6 +3,7 @@ import { isAbsolute } from 'node:path';
 import { z } from 'zod';
 import type { AuditDecision, AuditLog } from '../agent/audit.js';
 import { decide } from '../agent/autonomy.js';
+import { catalogToConfig, loadCatalog } from '../connectors/catalog.js';
 import { discover, readSecretsFor, toServerConfig } from '../connectors/discovery.js';
 import type { ConnectorManager } from '../connectors/manager.js';
 import { DeniedHostError, uniqueId, type ConnectorRegistry } from '../connectors/registry.js';
@@ -13,6 +14,8 @@ export interface ApiDeps {
   registry: ConnectorRegistry; manager: ConnectorManager; secrets: SecretStore; audit: AuditLog;
   health: () => Promise<boolean>; models: { main: string; vision: string };
   claudeJsonPath: string; scanDirs: () => string[]; addScanDir: (dir: string) => void; clock: () => number;
+  /** Set by Task 10/11: lets Studio show the pending "Continue sign-in" link for a connector mid-OAuth-flow. */
+  oauth?: { pendingUrl(id: string): string | undefined };
 }
 export interface ApiRequest { method: string; path: string; query: URLSearchParams; body: unknown }
 export interface ApiResponse { status: number; json: unknown }
@@ -104,9 +107,12 @@ export async function handleApi(req: ApiRequest, deps: ApiDeps): Promise<ApiResp
       const cfg = toServerConfig(found, new Set(deps.registry.list().map((s) => s.id)));
       const values = readSecretsFor(found);
       const combined = { ...values.env, ...values.headers };
-      // I3: store secrets after the importable check, before upsert; if upsert throws, delete what was just stored.
-      await storeSecrets(deps, cfg.id, combined);
+      // N2: validate every imported secret value (control chars, size) before anything is written.
+      if (!Secrets.safeParse(combined).success) return err(400, 'secret values must not contain control characters');
+      // I3/N2: store secrets after the importable check, before upsert; if either storing or upsert throws,
+      // delete whatever was already stored (a partial multi-secret write included).
       try {
+        await storeSecrets(deps, cfg.id, combined);
         deps.registry.upsert(cfg);
       } catch (e) {
         await rollbackSecrets(deps, cfg.id, Object.keys(combined));
@@ -159,6 +165,11 @@ export async function handleApi(req: ApiRequest, deps: ApiDeps): Promise<ApiResp
         await deps.manager.disconnect(cfg.id);
         return ok(await deps.manager.ensureConnected(cfg.id));
       }
+      if (method === 'POST' && seg[3] === 'auth') {
+        const status = await deps.manager.ensureConnected(cfg.id);
+        const url = deps.oauth?.pendingUrl(cfg.id);
+        return ok({ state: status.state, ...(url ? { authorizationUrl: url } : {}) });
+      }
     }
     if (seg[1] === 'tools' && seg[2]) {
       const qualified = seg[2];
@@ -182,6 +193,39 @@ export async function handleApi(req: ApiRequest, deps: ApiDeps): Promise<ApiResp
       const limit = Number(req.query.get('limit') ?? '200');
       const decision = req.query.get('decision') as AuditDecision | null;
       return ok(deps.audit.list({ limit: Number.isFinite(limit) ? limit : 200, ...(req.query.get('serverId') ? { serverId: req.query.get('serverId')! } : {}), ...(decision ? { decision } : {}) }));
+    }
+    if (method === 'GET' && path === '/api/catalog') {
+      const added = new Set(deps.registry.list().filter((s) => s.source === 'catalog').map((s) => s.url ?? s.command));
+      return ok(loadCatalog().map((e) => ({ ...e, added: added.has(e.url ?? e.command) })));
+    }
+    if (method === 'POST' && seg[1] === 'catalog' && seg[2] && seg[3] === 'add') {
+      const AddBody = z.object({
+        confirm: z.literal(true), clientId: z.string().max(200).optional(),
+        env: Secrets.optional(), headers: Secrets.optional(), args: z.array(z.string().startsWith('/')).max(20).optional(),
+      });
+      const body = AddBody.safeParse(req.body);
+      if (!body.success) return err(400, 'confirm:true is required');
+      const entry = loadCatalog().find((e) => e.id === seg[2]);
+      if (!entry) return err(404, 'not found');
+      let cfg: ServerConfig;
+      try {
+        cfg = catalogToConfig(entry, new Set(deps.registry.list().map((s) => s.id)), body.data);
+      } catch (e) {
+        return err(400, (e as Error).message);
+      }
+      deps.registry.upsert(cfg); // validates + denylist before any secret is stored
+      const combined = { ...(body.data.env ?? {}), ...(body.data.headers ?? {}) };
+      // Same pattern as the custom-connector route: roll back the config and any already-stored secrets if storing fails.
+      try {
+        await storeSecrets(deps, cfg.id, combined);
+      } catch (e) {
+        await rollbackSecrets(deps, cfg.id, Object.keys(combined));
+        deps.registry.remove(cfg.id);
+        const message = e instanceof Error ? e.message : 'failed to store secrets';
+        return err(e instanceof Error && /secret value/i.test(message) ? 400 : 500, message);
+      }
+      void deps.manager.ensureConnected(cfg.id);
+      return ok({ id: cfg.id });
     }
     if (method === 'POST' && path === '/api/settings/scan-dirs') {
       const body = ScanDirBody.safeParse(req.body);

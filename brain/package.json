@@ -7,7 +7,7 @@
     "node": ">=26"
   },
   "scripts": {
-    "build": "tsc -p tsconfig.json",
+    "build": "tsc -p tsconfig.json && node -e \"require('node:fs').cpSync('src/connectors/catalog.json','dist/connectors/catalog.json')\"",
     "typecheck": "tsc -p tsconfig.json --noEmit",
     "test": "vitest run",
     "test:cov": "vitest run --coverage",
