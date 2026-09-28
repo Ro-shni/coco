@@ -1,22 +1,27 @@
 import { useState } from 'react';
-import { api, ignoreExpired } from '../api';
+import { api, SessionExpiredError } from '../api';
 import type { Mode, ToolView } from '../types';
 
 const LABEL: Record<Mode, string> = { auto: 'Run freely', confirm: 'Ask me first', off: 'Off' };
 
 export function ToolRow({ tool, onChanged }: { tool: ToolView; onChanged: () => void }) {
   const [mode, setMode] = useState<Mode>(tool.mode);
+  const [modeError, setModeError] = useState<string>();
   const [testing, setTesting] = useState(false);
   const [args, setArgs] = useState('{}');
   const [result, setResult] = useState<string>();
 
   const change = async (m: Mode) => {
+    const previous = mode;
     setMode(m);
+    setModeError(undefined);
     try {
       await api('PUT', `/api/tools/${encodeURIComponent(tool.qualified)}/mode`, { mode: m });
       onChanged();
     } catch (e) {
-      ignoreExpired(e);
+      if (e instanceof SessionExpiredError) return; // full-page message already shown
+      setMode(previous); // revert the optimistic update
+      setModeError(e instanceof Error ? e.message : String(e));
     }
   };
   const run = async () => {
@@ -39,6 +44,7 @@ export function ToolRow({ tool, onChanged }: { tool: ToolView; onChanged: () => 
         </select>
         <button onClick={() => setTesting((t) => !t)}>Test</button>
       </div>
+      {modeError && <p role="alert" className="error small">{`Couldn't change permission: ${modeError}`}</p>}
       {testing && (
         <div className="tool-test">
           <textarea aria-label={`Arguments for ${tool.name}`} value={args} onChange={(e) => setArgs(e.target.value)} rows={3} />

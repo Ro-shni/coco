@@ -1,5 +1,7 @@
 import { useCallback, useEffect, useState } from 'react';
-import { api, ignoreExpired } from '../api';
+import { api, reportApiError, SessionExpiredError } from '../api';
+import { CustomConnectorForm } from '../components/CustomConnectorForm';
+import { ErrorBanner } from '../components/ErrorBanner';
 import { ImportDialog, type ImportPreview } from '../components/ImportDialog';
 import { StatusDot } from '../components/StatusDot';
 import { ToolRow } from '../components/ToolRow';
@@ -18,9 +20,14 @@ export function Connectors() {
   const [catalog, setCatalog] = useState<CatalogItem[]>([]);
   const [pending, setPending] = useState<Pending>();
   const [busy, setBusy] = useState(false);
-  const [error, setError] = useState<string>();
+  const [dialogError, setDialogError] = useState<string>();
+  // Visible-errors fix: every action outside the ImportDialog's own confirm flow (reconnect, remove,
+  // sign-in, scan-dir, enabled toggle, and the tab's own initial load) reports into this shared banner.
+  const [bannerError, setBannerError] = useState<string>();
   const [authLinks, setAuthLinks] = useState<Record<string, string>>({});
   const [scanDir, setScanDir] = useState('');
+
+  const reportFailure = reportApiError(setBannerError);
 
   const load = useCallback(async () => {
     try {
@@ -31,31 +38,40 @@ export function Connectors() {
       ]);
       setMine(c); setFound(d.servers); setCatalog(k);
     } catch (e) {
-      ignoreExpired(e);
+      if (e instanceof SessionExpiredError) return; // full-page message already shown
+      setBannerError(e instanceof Error ? e.message : String(e));
     }
   }, []);
   useEffect(() => { void load(); }, [load]);
 
   const confirm = async () => {
     if (!pending) return;
-    setBusy(true); setError(undefined);
+    setBusy(true); setDialogError(undefined);
     try { await pending.submit(); setPending(undefined); await load(); }
-    catch (e) { setError((e as Error).message); }
+    catch (e) { setDialogError((e as Error).message); }
     finally { setBusy(false); }
   };
 
   const signIn = async (id: string) => {
+    setBannerError(undefined);
     try {
       const r = await api<{ authorizationUrl?: string }>('POST', `/api/connectors/${id}/auth`);
       if (r.authorizationUrl) setAuthLinks((m) => ({ ...m, [id]: r.authorizationUrl! }));
       else await load();
     } catch (e) {
-      ignoreExpired(e);
+      reportFailure(e);
     }
+  };
+
+  const setEnabled = (id: string, enabled: boolean) => {
+    setBannerError(undefined);
+    void api('POST', `/api/connectors/${id}/enabled`, { enabled }).then(load).catch(reportFailure);
   };
 
   return (
     <section>
+      {bannerError && <ErrorBanner message={bannerError} onDismiss={() => setBannerError(undefined)} />}
+
       <h2>Your connectors</h2>
       {mine.length === 0 && <p className="muted">Nothing connected yet. Import one below.</p>}
       <ul className="cards">
@@ -66,11 +82,20 @@ export function Connectors() {
               <strong>{c.config.name}</strong>
               {c.config.readOnly && <span className="badge">read-only</span>}
               {c.status?.error && <span className="error">{c.status.error}</span>}
+              <label className="row">
+                <input
+                  type="checkbox"
+                  aria-label={`Enabled for ${c.config.name}`}
+                  checked={c.config.enabled}
+                  onChange={(e) => setEnabled(c.config.id, e.target.checked)}
+                />
+                Enabled
+              </label>
               <span className="spacer" />
               {c.status?.state === 'needs_auth' && <button onClick={() => void signIn(c.config.id)}>Sign in</button>}
               {authLinks[c.config.id] && <a href={authLinks[c.config.id]} target="_blank" rel="noreferrer">Continue sign-in ↗</a>}
-              <button onClick={() => void api('POST', `/api/connectors/${c.config.id}/reconnect`).then(load).catch(ignoreExpired)}>Reconnect</button>
-              <button onClick={() => void api('DELETE', `/api/connectors/${c.config.id}`).then(load).catch(ignoreExpired)}>Remove</button>
+              <button onClick={() => { setBannerError(undefined); void api('POST', `/api/connectors/${c.config.id}/reconnect`).then(load).catch(reportFailure); }}>Reconnect</button>
+              <button onClick={() => { setBannerError(undefined); void api('DELETE', `/api/connectors/${c.config.id}`).then(load).catch(reportFailure); }}>Remove</button>
             </header>
             <ul className="tools">{c.tools.map((t) => <ToolRow key={t.qualified} tool={t} onChanged={() => void load()} />)}</ul>
           </li>
@@ -78,7 +103,7 @@ export function Connectors() {
       </ul>
 
       <h2>Found on this Mac</h2>
-      <form className="row" onSubmit={(e) => { e.preventDefault(); void api('POST', '/api/settings/scan-dirs', { dir: scanDir }).then(() => { setScanDir(''); return load(); }).catch((err: Error) => setError(err.message)); }}>
+      <form className="row" onSubmit={(e) => { e.preventDefault(); setBannerError(undefined); void api('POST', '/api/settings/scan-dirs', { dir: scanDir }).then(() => { setScanDir(''); return load(); }).catch(reportFailure); }}>
         <input aria-label="Folder to scan for .mcp.json" placeholder="/Users/you/code" value={scanDir} onChange={(e) => setScanDir(e.target.value)} />
         <button type="submit">Add folder to scan</button>
       </form>
@@ -98,6 +123,9 @@ export function Connectors() {
         ))}
       </ul>
 
+      <h2>Add custom connector</h2>
+      <CustomConnectorForm onPreview={setPending} />
+
       <h2>Catalog</h2>
       <ul className="cards">
         {catalog.map((k) => (
@@ -111,7 +139,7 @@ export function Connectors() {
         ))}
       </ul>
 
-      {pending && <ImportDialog preview={pending.preview} busy={busy} error={error} onConfirm={() => void confirm()} onCancel={() => { setPending(undefined); setError(undefined); }} />}
+      {pending && <ImportDialog preview={pending.preview} busy={busy} error={dialogError} onConfirm={() => void confirm()} onCancel={() => { setPending(undefined); setDialogError(undefined); }} />}
     </section>
   );
 }

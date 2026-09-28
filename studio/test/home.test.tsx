@@ -10,4 +10,12 @@ describe('Home tab', () => {
     expect(screen.getByText(/Ollama is not reachable/)).toBeTruthy();
     expect(screen.getByText('2 of 3 connected · 1 need attention')).toBeTruthy();
   });
+
+  it('shows an error message instead of "Loading…" when the health check fails', async () => {
+    vi.stubGlobal('fetch', vi.fn(async () => new Response(JSON.stringify({ error: 'boom' }), { status: 500 })));
+    render(<Home />);
+    const banner = await screen.findByRole('alert');
+    expect(banner.textContent).toContain("Couldn't load Home");
+    expect(screen.queryByText('Loading…')).toBeNull();
+  });
 });

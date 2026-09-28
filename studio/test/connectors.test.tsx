@@ -29,6 +29,14 @@ const base = {
   'GET /api/catalog': () => [],
 };
 
+function atlassianConnector(overrides: { toolMode?: string } = {}) {
+  return {
+    config: { id: 'atlassian', name: 'Atlassian', transport: 'http', url: 'https://mcp.atlassian.com/v1/mcp', args: [], envSecrets: [], headerSecrets: [], auth: 'oauth', enabled: true, source: 'catalog', readOnly: false },
+    status: { id: 'atlassian', state: 'connected', toolCount: 1, since: 0 },
+    tools: [{ qualified: 'atlassian__createJiraIssue', name: 'createJiraIssue', description: 'Create', mode: overrides.toolMode ?? 'confirm', reason: 'write_default' }],
+  };
+}
+
 describe('Connectors tab', () => {
   it('shows discovered servers; blocked prod hosts cannot be imported', async () => {
     mockFetch(base);
@@ -82,5 +90,64 @@ describe('Connectors tab', () => {
     const link = await screen.findByRole('link', { name: /continue sign-in/i });
     expect(link.getAttribute('href')).toBe('https://auth.atlassian.com/authorize?x=1');
     expect(link.getAttribute('target')).toBe('_blank');
+  });
+
+  it('a failed mode PUT reverts the select and shows an error inline (no route for the PUT => 404)', async () => {
+    const calls = mockFetch({ ...base, 'GET /api/connectors': () => [atlassianConnector()] });
+    render(<Connectors />);
+    const select = (await screen.findByLabelText('Permission for createJiraIssue')) as HTMLSelectElement;
+    expect(select.value).toBe('confirm');
+    await userEvent.selectOptions(select, 'off');
+    await waitFor(() => expect(select.value).toBe('confirm')); // reverted after the failed PUT
+    expect(await screen.findByText(/Couldn't change permission/)).toBeTruthy();
+    expect(calls.some((c) => c.key === 'PUT /api/tools/atlassian__createJiraIssue/mode')).toBe(true);
+  });
+
+  it('a failed Reconnect shows the shared error banner (no route for reconnect => 404)', async () => {
+    mockFetch({ ...base, 'GET /api/connectors': () => [atlassianConnector()] });
+    render(<Connectors />);
+    const card = await screen.findByTestId('connector-atlassian');
+    await userEvent.click(within(card).getByRole('button', { name: 'Reconnect' }));
+    const banner = await screen.findByRole('alert');
+    expect(banner.textContent).toContain('nf'); // the mock's default 404 error body
+  });
+
+  it('the Enabled toggle POSTs {enabled:false}', async () => {
+    const calls = mockFetch({
+      ...base,
+      'GET /api/connectors': () => [atlassianConnector()],
+      'POST /api/connectors/atlassian/enabled': () => ({ ok: true }),
+    });
+    render(<Connectors />);
+    const toggle = await screen.findByLabelText('Enabled for Atlassian');
+    await userEvent.click(toggle);
+    await waitFor(() => expect(calls.find((c) => c.key === 'POST /api/connectors/atlassian/enabled')?.body).toEqual({ enabled: false }));
+  });
+
+  it('adding a custom connector shows the exact command and posts the right body only after Run this server', async () => {
+    const calls = mockFetch({ ...base, 'POST /api/connectors': () => ({ id: 'my-tool' }) });
+    render(<Connectors />);
+    await screen.findByRole('heading', { name: 'Add custom connector' });
+
+    await userEvent.type(screen.getByLabelText('Connector name'), 'my-tool');
+    await userEvent.type(screen.getByLabelText('Command'), '/usr/bin/my-tool');
+    await userEvent.type(screen.getByLabelText('Arguments, one per line'), '--flag{Enter}value');
+    await userEvent.click(screen.getByRole('button', { name: 'Add env var' }));
+    await userEvent.type(screen.getByLabelText('env var name 1'), 'API_KEY');
+    await userEvent.type(screen.getByLabelText('env var value 1'), 'super-secret');
+    await userEvent.click(screen.getByRole('button', { name: 'Add custom connector' }));
+
+    const dialog = screen.getByRole('dialog');
+    expect(within(dialog).getByText('/usr/bin/my-tool --flag value')).toBeTruthy();
+    expect(within(dialog).getByText('API_KEY')).toBeTruthy();
+    expect(within(dialog).queryByText('super-secret')).toBeNull(); // credential values are never shown
+    expect(calls.some((c) => c.key === 'POST /api/connectors')).toBe(false);
+
+    await userEvent.click(within(dialog).getByRole('button', { name: 'Run this server' }));
+    await waitFor(() => expect(calls.find((c) => c.key === 'POST /api/connectors')?.body).toEqual({
+      name: 'my-tool', transport: 'stdio', confirm: true,
+      command: '/usr/bin/my-tool', args: ['--flag', 'value'],
+      env: { API_KEY: 'super-secret' },
+    }));
   });
 });

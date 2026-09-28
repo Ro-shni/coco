@@ -31,10 +31,14 @@ function expireSession(message: string): never {
   throw new SessionExpiredError(message);
 }
 
-/** Swallows a SessionExpiredError (the App shell already reacted to it via onSessionExpired) while letting
- * any other error keep propagating. Use as `.catch(ignoreExpired)` on fire-and-forget calls. */
-export function ignoreExpired(e: unknown): void {
-  if (!(e instanceof SessionExpiredError)) throw e;
+/** Builds a `.catch()` handler for fire-and-forget calls: a `SessionExpiredError` is ignored (the App shell
+ * already reacted to it via `onSessionExpired`, so the whole UI is about to be replaced); any other error's
+ * message is handed to `setMessage` so the caller can show it (a banner, an inline error, etc). */
+export function reportApiError(setMessage: (message: string) => void): (e: unknown) => void {
+  return (e: unknown) => {
+    if (e instanceof SessionExpiredError) return;
+    setMessage(e instanceof Error ? e.message : String(e));
+  };
 }
 
 export async function api<T>(method: string, path: string, body?: unknown): Promise<T> {
