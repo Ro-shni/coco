@@ -50,6 +50,10 @@ describe('loadConfig', () => {
     expect(cfg.voice).toEqual({ enabled: false, speakNudges: true, speakTypedReplies: true });
     expect(DEFAULT_CONFIG.voice).toEqual({ enabled: true, speakNudges: true, speakTypedReplies: false });
   });
+
+  it('defaults connectors.scanDirs to an empty list', () => {
+    expect(loadConfig(mkdtempSync(join(tmpdir(), 'coco-cfg-'))).connectors.scanDirs).toEqual([]);
+  });
 });
 
 describe('PersonaFile', () => {
