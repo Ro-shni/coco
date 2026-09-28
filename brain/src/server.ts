@@ -1,5 +1,6 @@
 import { timingSafeEqual } from 'node:crypto';
 import { createServer } from 'node:http';
+import type { IncomingMessage, ServerResponse } from 'node:http';
 import type { AddressInfo } from 'node:net';
 import WebSocket, { WebSocketServer } from 'ws';
 import type { Logger } from './logger.js';
@@ -27,8 +28,10 @@ export async function startServer(opts: {
   onConnect?: () => void;
   log: Logger;
   maxPayloadBytes?: number;
+  onHttp?: (req: IncomingMessage, res: ServerResponse, port: number) => void;
 }): Promise<BrainServer> {
-  const http = createServer((_req, res) => res.writeHead(404).end());
+  let boundPort = 0;
+  const http = createServer((req, res) => (opts.onHttp ? opts.onHttp(req, res, boundPort) : res.writeHead(404).end()));
   const wss = new WebSocketServer({ noServer: true, maxPayload: opts.maxPayloadBytes ?? MAX_PAYLOAD_BYTES });
   let client: WebSocket | undefined;
 
@@ -61,6 +64,7 @@ export async function startServer(opts: {
 
   await new Promise<void>((resolve) => http.listen(opts.port ?? 0, '127.0.0.1', resolve));
   const { port } = http.address() as AddressInfo;
+  boundPort = port;
 
   return {
     port,

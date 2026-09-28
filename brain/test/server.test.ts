@@ -76,4 +76,11 @@ describe('startServer', () => {
     // the server process is still alive and functional after the oversize frame
     expect(() => server!.send({ v: 1, type: 'mood', mood: 'bored' })).not.toThrow();
   });
+
+  it('delegates plain HTTP requests to onHttp and still 404s without it', async () => {
+    const seen: string[] = [];
+    server = await startServer({ token: TOKEN, onMessage: () => undefined, log: silentLogger, onHttp: (req, res) => { seen.push(req.url ?? ''); res.writeHead(204).end(); } });
+    expect((await fetch(`http://127.0.0.1:${server.port}/x`)).status).toBe(204);
+    expect(seen).toEqual(['/x']);
+  });
 });
