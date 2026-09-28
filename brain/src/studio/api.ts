@@ -7,7 +7,7 @@ import { discover, readSecretsFor, toServerConfig } from '../connectors/discover
 import type { ConnectorManager } from '../connectors/manager.js';
 import { DeniedHostError, uniqueId, type ConnectorRegistry } from '../connectors/registry.js';
 import { secretKey, type SecretStore } from '../connectors/secrets.js';
-import type { ServerConfig } from '../connectors/types.js';
+import type { ServerConfig, ServerStatus } from '../connectors/types.js';
 
 export interface ApiDeps {
   registry: ConnectorRegistry; manager: ConnectorManager; secrets: SecretStore; audit: AuditLog;
@@ -19,12 +19,27 @@ export interface ApiResponse { status: number; json: unknown }
 
 const ok = (json: unknown): ApiResponse => ({ status: 200, json });
 const err = (status: number, error: string): ApiResponse => ({ status, json: { error } });
+const defaultStatus = (id: string): ServerStatus => ({ id, state: 'disconnected', toolCount: 0, since: 0 }); // M8
 
 const ImportBody = z.object({ key: z.string().min(1), confirm: z.literal(true) });
-const Secrets = z.record(z.string().regex(/^[A-Za-z0-9_.-]{1,64}$/), z.string().max(8192));
+// I3: control characters (e.g. a pasted multi-line PEM/JSON credential) and oversize values are rejected here,
+// up front, before anything is written to the registry or the secret store.
+const CONTROL_CHARS = /[\u0000-\u001f\u007f]/;
+const SecretValue = z.string().max(8192).refine((v) => !CONTROL_CHARS.test(v), { message: 'secret values must not contain control characters' });
+const Secrets = z.record(z.string().regex(/^[A-Za-z0-9_.-]{1,64}$/), SecretValue);
+// M7: userinfo in a custom URL (https://user:pass@host/mcp) would be persisted to disk in plaintext and echoed
+// back from GET /api/connectors.
+const NoUserinfoUrl = z.string().url().refine((u) => {
+  try {
+    const parsed = new URL(u);
+    return parsed.username === '' && parsed.password === '';
+  } catch {
+    return false;
+  }
+}, { message: 'url must not contain userinfo' });
 const CustomBody = z.object({
   name: z.string().min(1).max(60), transport: z.enum(['stdio', 'http']),
-  command: z.string().min(1).optional(), args: z.array(z.string()).max(50).optional(), url: z.string().url().optional(),
+  command: z.string().min(1).optional(), args: z.array(z.string()).max(50).optional(), url: NoUserinfoUrl.optional(),
   env: Secrets.optional(), headers: Secrets.optional(), confirm: z.literal(true),
 });
 const ModeBody = z.object({ mode: z.enum(['auto', 'confirm', 'off']) });
@@ -36,6 +51,11 @@ async function storeSecrets(deps: ApiDeps, id: string, values: Record<string, st
   for (const [name, value] of Object.entries(values)) await deps.secrets.set(secretKey(id, name), value);
 }
 
+/** I3: undo a partial write. Deleting a name that was never actually stored is a harmless no-op in both stores. */
+async function rollbackSecrets(deps: ApiDeps, id: string, names: Iterable<string>): Promise<void> {
+  await Promise.allSettled([...names].map((name) => deps.secrets.delete(secretKey(id, name))));
+}
+
 function toolsFor(deps: ApiDeps, id: string) {
   return deps.manager.tools().filter((t) => t.serverId === id).map((t) => {
     const d = decide({ qualified: t.qualified, toolName: t.name, args: {}, override: deps.registry.autonomy(t.qualified), untrustedText: '' });
@@ -43,9 +63,23 @@ function toolsFor(deps: ApiDeps, id: string) {
   });
 }
 
+/** M1: a malformed percent-escape (`%zz`) throws a URIError from decodeURIComponent; treat that as a 400, not a 500. */
+function decodeSegments(path: string): string[] | undefined {
+  const out: string[] = [];
+  for (const s of path.split('/').filter(Boolean)) {
+    try {
+      out.push(decodeURIComponent(s));
+    } catch {
+      return undefined;
+    }
+  }
+  return out;
+}
+
 export async function handleApi(req: ApiRequest, deps: ApiDeps): Promise<ApiResponse> {
   const { method, path } = req;
-  const seg = path.split('/').filter(Boolean).map(decodeURIComponent); // ['api', ...]
+  const seg = decodeSegments(path); // ['api', ...]
+  if (!seg) return err(400, 'malformed path');
   try {
     if (method === 'GET' && path === '/api/health') {
       const st = deps.manager.statuses();
@@ -54,7 +88,7 @@ export async function handleApi(req: ApiRequest, deps: ApiDeps): Promise<ApiResp
     }
     if (method === 'GET' && path === '/api/connectors') {
       const statuses = new Map(deps.manager.statuses().map((s) => [s.id, s]));
-      return ok(deps.registry.list().map((config) => ({ config, status: statuses.get(config.id), tools: toolsFor(deps, config.id) })));
+      return ok(deps.registry.list().map((config) => ({ config, status: statuses.get(config.id) ?? defaultStatus(config.id), tools: toolsFor(deps, config.id) })));
     }
     if (method === 'GET' && path === '/api/discovery') {
       return ok({ servers: discover({ claudeJsonPath: deps.claudeJsonPath, scanDirs: deps.scanDirs(), importedKeys: deps.registry.importedKeys() }), scanDirs: deps.scanDirs() });
@@ -69,8 +103,15 @@ export async function handleApi(req: ApiRequest, deps: ApiDeps): Promise<ApiResp
       if (found.status !== 'importable') return err(409, found.status);
       const cfg = toServerConfig(found, new Set(deps.registry.list().map((s) => s.id)));
       const values = readSecretsFor(found);
-      await storeSecrets(deps, cfg.id, { ...values.env, ...values.headers });
-      deps.registry.upsert(cfg);
+      const combined = { ...values.env, ...values.headers };
+      // I3: store secrets after the importable check, before upsert; if upsert throws, delete what was just stored.
+      await storeSecrets(deps, cfg.id, combined);
+      try {
+        deps.registry.upsert(cfg);
+      } catch (e) {
+        await rollbackSecrets(deps, cfg.id, Object.keys(combined));
+        throw e;
+      }
       void deps.manager.ensureConnected(cfg.id);
       return ok({ id: cfg.id });
     }
@@ -85,7 +126,16 @@ export async function handleApi(req: ApiRequest, deps: ApiDeps): Promise<ApiResp
         auth: b.transport === 'http' && !b.headers ? 'oauth' : 'none', enabled: true, source: 'custom', readOnly: false,
       };
       deps.registry.upsert(cfg); // validates + denylist before any secret is stored
-      await storeSecrets(deps, id, { ...(b.env ?? {}), ...(b.headers ?? {}) });
+      const combined = { ...(b.env ?? {}), ...(b.headers ?? {}) };
+      // I3: if a secret write fails after the config is persisted, roll both back rather than leave a half-configured connector.
+      try {
+        await storeSecrets(deps, id, combined);
+      } catch (e) {
+        await rollbackSecrets(deps, id, Object.keys(combined));
+        deps.registry.remove(id);
+        const message = e instanceof Error ? e.message : 'failed to store secrets';
+        return err(e instanceof Error && /secret value/i.test(message) ? 400 : 500, message);
+      }
       void deps.manager.ensureConnected(id);
       return ok({ id });
     }
