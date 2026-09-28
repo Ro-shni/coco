@@ -77,3 +77,78 @@ describe('OAuthFlows.handleCallback', () => {
     expect((await s.flows.handleCallback(new URLSearchParams('code=abc&state=state-1'))).status).toBe(400);
   });
 });
+
+describe('OAuthFlows fix round 1', () => {
+  function setup2(states: string[]) {
+    const secrets = new MemorySecretStore();
+    let now = 0;
+    const seenVerifiers: string[] = [];
+    const authFn = vi.fn(async (p: { codeVerifier(): Promise<string> }) => {
+      seenVerifiers.push(await p.codeVerifier());
+      return 'AUTHORIZED' as const;
+    });
+    const logged: { event: string; data?: Record<string, unknown> }[] = [];
+    const log = { info: () => undefined, warn: (event: string, data?: Record<string, unknown>) => logged.push({ event, data }), error: () => undefined };
+    const flows = new OAuthFlows({
+      secrets, redirectUrl: () => 'http://127.0.0.1:47823/oauth/callback', newState: () => states.shift()!, clock: () => now,
+      authFn: authFn as never, log,
+    });
+    return { flows, secrets, authFn, seenVerifiers, logged, advance: (ms: number) => (now += ms) };
+  }
+
+  it('I3: the older of two sign-in tabs completes with its own verifier', async () => {
+    const s = setup2(['s1', 's2']);
+    const p = s.flows.providerFor(cfg());
+    await p.state!();
+    await p.saveCodeVerifier('v1');
+    await p.redirectToAuthorization(new URL('https://auth.example/authorize?state=s1'));
+    await p.state!();
+    await p.saveCodeVerifier('v2');
+    await p.redirectToAuthorization(new URL('https://auth.example/authorize?state=s2'));
+    const r = await s.flows.handleCallback(new URLSearchParams('code=c&state=s1'));
+    expect(r.status).toBe(200);
+    expect(s.seenVerifiers).toEqual(['v1']);
+    expect(s.flows.pendingUrl('atlassian')).toBe('https://auth.example/authorize?state=s2');
+  });
+
+  it('I3: a newer attempt does not extend an older attempt’s TTL', async () => {
+    const s = setup2(['s1', 's2']);
+    const p = s.flows.providerFor(cfg());
+    await p.state!();
+    await p.saveCodeVerifier('v1');
+    s.advance(9 * 60_000);
+    await p.state!();
+    await p.saveCodeVerifier('v2');
+    s.advance(2 * 60_000);
+    expect((await s.flows.handleCallback(new URLSearchParams('code=c&state=s1'))).status).toBe(400);
+    expect((await s.flows.handleCallback(new URLSearchParams('code=c&state=s2'))).status).toBe(200);
+    expect(s.seenVerifiers).toEqual(['v2']);
+  });
+
+  it('I2: invalidateCredentials clears the requested scope', async () => {
+    const s = setup2(['s1']);
+    const p = s.flows.providerFor(cfg());
+    await p.saveClientInformation!({ client_id: 'dyn-1' });
+    await p.saveTokens({ access_token: 'at', token_type: 'Bearer' });
+    await p.invalidateCredentials!('tokens');
+    expect(await p.tokens()).toBeUndefined();
+    expect(await p.clientInformation()).toEqual({ client_id: 'dyn-1' });
+    await p.saveTokens({ access_token: 'at', token_type: 'Bearer' });
+    await p.state!();
+    await p.saveCodeVerifier('v1');
+    await p.invalidateCredentials!('all');
+    expect(await p.tokens()).toBeUndefined();
+    expect(await p.clientInformation()).toBeUndefined();
+    await expect(p.codeVerifier()).rejects.toThrow();
+  });
+
+  it('I5: logs exchange failures by class only', async () => {
+    const s = setup2(['s1']);
+    s.authFn.mockRejectedValueOnce(Object.assign(new Error('https://auth.example/token?secret=x failed'), { name: 'InvalidGrantError' }));
+    const p = s.flows.providerFor(cfg());
+    await p.state!();
+    await p.saveCodeVerifier('v1');
+    expect((await s.flows.handleCallback(new URLSearchParams('code=c&state=s1'))).status).toBe(400);
+    expect(s.logged).toEqual([{ event: 'oauth_exchange_failed', data: { id: 'atlassian', error: 'InvalidGrantError' } }]);
+  });
+});
