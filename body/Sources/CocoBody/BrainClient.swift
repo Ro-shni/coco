@@ -20,12 +20,17 @@ final class BrainClient {
 
     private let paths: CocoPaths
     private let token = BrainClient.makeToken()
+    /// A separate per-launch secret from `token`: it authenticates only `POST /api/launch-nonce`
+    /// (see StudioWindowController), never the WebSocket. Internal so AppDelegate can read it.
+    let studioToken = BrainClient.makeToken()
     private let session = URLSession(configuration: .default)
     private var process: Process?
     private var socket: URLSessionWebSocketTask?
     private var limiter = RestartLimiter()
     private var stopping = false
     private static let readyPrefix = "COCO_READY "
+    /// Set once the brain reports its port; nil until then (e.g. before the first COCO_READY line).
+    private(set) var port: Int?
 
     init(paths: CocoPaths) { self.paths = paths }
 
@@ -85,6 +90,7 @@ final class BrainClient {
         p.currentDirectoryURL = paths.brainDir
         var env = ProcessInfo.processInfo.environment
         env["COCO_TOKEN"] = token
+        env["COCO_STUDIO_TOKEN"] = studioToken
         env["COCO_CONFIG_DIR"] = paths.configDir.path
         env["COCO_DATA_DIR"] = paths.supportDir.path
         p.environment = env
@@ -125,6 +131,7 @@ final class BrainClient {
     }
 
     private func connect(port: Int) {
+        self.port = port
         var request = URLRequest(url: URL(string: "ws://127.0.0.1:\(port)")!)
         request.setValue("Bearer \(token)", forHTTPHeaderField: "Authorization")
         let task = session.webSocketTask(with: request)

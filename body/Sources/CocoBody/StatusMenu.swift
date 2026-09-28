@@ -4,6 +4,7 @@ import CocoCore
 final class StatusMenu: NSObject, NSMenuDelegate {
     var onOpenChat: (() -> Void)?
     var onTogglePause: (() -> Void)?
+    var onOpenStudio: (() -> Void)?
     var onPermissions: (() -> Void)?
     var onSetHome: ((HomeSpec) -> Void)?
     /// Voice was turned on/off (the setting itself is already saved).
@@ -25,6 +26,7 @@ final class StatusMenu: NSObject, NSMenuDelegate {
         menu.addItem(withTitle: "Open chat", action: #selector(openChat), keyEquivalent: "").target = self
         pauseItem.target = self
         menu.addItem(pauseItem)
+        menu.addItem(withTitle: "Open Coco Studio…", action: #selector(openStudio), keyEquivalent: ",").target = self
         menu.addItem(withTitle: "Permissions…", action: #selector(permissions), keyEquivalent: "").target = self
         menu.addItem(.separator())
         menu.addItem(homePositionItem())
@@ -111,6 +113,7 @@ final class StatusMenu: NSObject, NSMenuDelegate {
 
     @objc private func openChat() { onOpenChat?() }
     @objc private func togglePause() { onTogglePause?() }
+    @objc private func openStudio() { onOpenStudio?() }
     @objc private func permissions() { onPermissions?() }
 
     @objc private func selectCorner(_ sender: NSMenuItem) {

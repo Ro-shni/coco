@@ -10,6 +10,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private let chat = ChatWindowController()
     private var menu: StatusMenu!
     private let permissions = PermissionsWindowController()
+    private let studio = StudioWindowController()
     private var paused = false
     private let voiceInput = VoiceInput()
     private let voiceOutput = VoiceOutput()
@@ -102,6 +103,13 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             self.brain.send(.utterance(UtterancePayload(text: String(text.prefix(Self.chatMaxChars)), source: .chat)))
         }
         menu.onOpenChat = { [weak self] in self?.chat.show() }
+        menu.onOpenStudio = { [weak self] in
+            guard let self, let port = self.brain.port else {
+                FileLog.body.warn("studio: brain not ready")
+                return
+            }
+            self.studio.show(port: port, token: self.brain.studioToken)
+        }
         menu.onPermissions = { [weak self] in self?.permissions.show() }
         menu.onTogglePause = { [weak self] in self?.togglePause() }
         menu.onSetHome = { [weak self] spec in self?.overlay.setHome(spec) }

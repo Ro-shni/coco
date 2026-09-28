@@ -85,6 +85,13 @@ cat > "$APP/Contents/Info.plist" <<PLIST
 </dict></plist>
 PLIST
 
+# Build the brain and Coco Studio (the Studio build writes into brain/dist/studio).
+(cd "$BRAIN" && npm run build)
+if [ -f "$ROOT/studio/package.json" ]; then
+  (cd "$ROOT/studio" && { [ -d node_modules ] || npm ci; } && npm run build)
+  [ -f "$BRAIN/dist/studio/index.html" ] || { echo "Error: Studio build missing ($BRAIN/dist/studio/index.html)" >&2; exit 1; }
+fi
+
 # Stage the brain: dist + package manifests, then install prod-only deps (ws, yaml, zod)
 # into the staging dir so nothing pulled in for tests/build tooling ships in the app.
 STAGE="$(mktemp -d "${TMPDIR:-/tmp}/coco-brain-stage.XXXXXX")"
