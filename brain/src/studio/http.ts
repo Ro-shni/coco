@@ -18,6 +18,10 @@ const SECURITY_HEADERS = {
   'content-security-policy': "default-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data:; connect-src 'self'; frame-ancestors 'none'",
 };
 const SessionBody = z.object({ nonce: z.string().min(1) });
+// N1: `n` is echoed into an inline script below; only ever render a value shaped like the 64-hex-char launch
+// nonce this same process minted (see sessions.ts: 32 bytes -> 64 hex chars). Anything else renders the
+// "link expired" state instead, so no attacker-controlled string ever reaches the page.
+const LAUNCH_NONCE = /^[0-9a-f]{64}$/;
 
 class BodyTooLargeError extends Error {}
 
@@ -69,10 +73,20 @@ async function readJsonBody(req: IncomingMessage, res: ServerResponse): Promise<
   }
 }
 
+const EXPIRED_BODY = 'This Studio link has expired — reopen Studio from the Coco menu.';
+
 /** The tiny page served at /studio/launch. Its only script consumes the launch nonce and stores the resulting
  * session token in sessionStorage (never a cookie, never sent to any other 127.0.0.1 port). `cspNonce` is a
- * fresh per-response value so the CSP can allow exactly this inline script and nothing else. */
-function launchPage(nonce: string, cspNonce: string): string {
+ * fresh per-response value so the CSP can allow exactly this inline script and nothing else.
+ *
+ * N1: `nonce` is `undefined` unless it already matched `LAUNCH_NONCE`, so this function never has to sanitize
+ * or reason about attacker-controlled content — an unmatched value simply renders the "link expired" state. */
+function launchPage(nonce: string | undefined, cspNonce: string): string {
+  if (!nonce) {
+    return `<!doctype html>
+<html><head><meta charset="utf-8"><title>Coco Studio</title></head>
+<body>${EXPIRED_BODY}</body></html>`;
+  }
   return `<!doctype html>
 <html><head><meta charset="utf-8"><title>Coco Studio</title></head>
 <body>
@@ -89,7 +103,7 @@ function launchPage(nonce: string, cspNonce: string): string {
     sessionStorage.setItem('coco_studio_session', data.token);
     location.replace('/studio/');
   } catch (e) {
-    document.body.textContent = 'This Studio link has expired — reopen Studio from the Coco menu.';
+    document.body.textContent = ${JSON.stringify(EXPIRED_BODY)};
   }
 })();
 </script>
@@ -132,10 +146,11 @@ export function createStudioHandler(opts: {
         if (path === '/studio/launch') {
           const hostCheck = checkHost(req.headers, port);
           if (!hostCheck.ok) return send(res, hostCheck.status, 'Forbidden', 'text/plain');
-          const n = url.searchParams.get('n') ?? '';
+          const raw = url.searchParams.get('n') ?? '';
+          const n = LAUNCH_NONCE.test(raw) ? raw : undefined; // N1: never echo an unvalidated value into the page
           const cspNonce = randomToken(16);
           return send(res, 200, launchPage(n, cspNonce), TYPES['.html']!, {
-            'content-security-policy': `default-src 'none'; script-src 'nonce-${cspNonce}'; connect-src 'self'; base-uri 'none'`,
+            'content-security-policy': `default-src 'none'; script-src 'nonce-${cspNonce}'; connect-src 'self'; base-uri 'none'; frame-ancestors 'none'; form-action 'none'`,
           });
         }
 

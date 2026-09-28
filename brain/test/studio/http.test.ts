@@ -90,16 +90,34 @@ describe('Studio over HTTP', () => {
       expect(res.status).toBe(401);
     });
 
-    it('/studio/launch always renders (Host-checked only), embedding the nonce for its own script to consume', async () => {
+    it('/studio/launch renders for a well-formed nonce (Host-checked only), embedding it for its own script to consume', async () => {
       const { base } = await boot();
-      const res = await fetch(`${base}/studio/launch?n=abc123`, { headers: {} });
+      const nonce = 'a'.repeat(64);
+      const res = await fetch(`${base}/studio/launch?n=${nonce}`, { headers: {} });
       expect(res.status).toBe(200);
       const text = await res.text();
       expect(text).toContain('/studio/session');
-      expect(text).toContain('abc123');
+      expect(text).toContain(nonce);
       expect(res.headers.get('cache-control')).toBe('no-store');
       expect(res.headers.get('content-security-policy')).toMatch(/script-src 'nonce-/);
+      expect(res.headers.get('content-security-policy')).toContain("frame-ancestors 'none'");
+      expect(res.headers.get('content-security-policy')).toContain("form-action 'none'");
       expect(res.headers.get('set-cookie')).toBeNull();
+    });
+
+    it('/studio/launch shows the "link expired" state for a missing or malformed nonce, without echoing it (N1)', async () => {
+      const { base } = await boot();
+      const res = await fetch(`${base}/studio/launch?n=${encodeURIComponent('<script>alert(1)</script>')}`, { headers: {} });
+      expect(res.status).toBe(200);
+      const text = await res.text();
+      expect(text).not.toContain('<script>alert');
+      expect(text).not.toContain('/studio/session');
+      expect(text.toLowerCase()).toContain('expired');
+      expect(res.headers.get('content-security-policy')).toContain("frame-ancestors 'none'");
+      expect(res.headers.get('content-security-policy')).toContain("form-action 'none'");
+
+      const short = await fetch(`${base}/studio/launch?n=abc123`);
+      expect((await short.text()).toLowerCase()).toContain('expired');
     });
 
     it('exchanging a valid nonce yields a session token that authorizes /api/*, no cookie involved', async () => {
