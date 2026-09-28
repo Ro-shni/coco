@@ -52,6 +52,26 @@ const truncate = (s: string): string => (s.length <= MAX_RESULT_CHARS ? s : s.sl
 /** M-6: status error text reaches Studio's status API, so strip anything that looks like a URL (query strings, endpoints). */
 const stripUrls = (s: string): string => s.replace(/https?:\/\/\S+/gi, '<url>');
 
+const CONNECTION_ERROR_CODES = new Set(['ECONNREFUSED', 'ECONNRESET', 'EPIPE']);
+const CONNECTION_ERROR_TEXT = /fetch failed|connection closed/i;
+
+/**
+ * N-1: a callTool (or listTools) request can fail because the underlying connection actually died — as opposed to
+ * a protocol-level hiccup (bad framing, a late/duplicate response, an unmatched progress token) that `onerror`
+ * also reports but that leaves a perfectly usable connection behind. Walks the `.cause` chain because Node's
+ * `fetch()` wraps a refused/reset socket in a top-level `TypeError: fetch failed`.
+ */
+function isConnectionError(err: unknown): boolean {
+  let cur: unknown = err;
+  for (let i = 0; i < 5 && cur instanceof Error; i++) {
+    const code = (cur as NodeJS.ErrnoException).code;
+    if (code && CONNECTION_ERROR_CODES.has(code)) return true;
+    if (CONNECTION_ERROR_TEXT.test(cur.message)) return true;
+    cur = (cur as { cause?: unknown }).cause;
+  }
+  return false;
+}
+
 function withTimeout<T>(p: Promise<T>, ms: number, what: string): Promise<T> {
   return new Promise<T>((resolve, reject) => {
     const t = setTimeout(() => reject(new Error(`${what} timed out after ${ms} ms`)), ms);
@@ -179,12 +199,13 @@ export class ConnectorManager {
           this.fail(cfg.id, e, 'server closed the connection');
         }
       };
-      // M-7: an unreachable HTTP server can error without ever closing; treat a transport error as a failure too.
-      client.onerror = (error: Error) => {
-        if (e.client === client) {
-          e.client = undefined;
-          this.fail(cfg.id, e, error.message.slice(0, 200));
-        }
+      // N-1: the SDK also reports non-fatal protocol conditions through onerror — e.g. a late response arriving
+      // for a call we already cancelled/timed out ("Received a response for an unknown message ID"). Treating
+      // every onerror as fatal marked a healthy server `error` and orphaned its still-live client/child (the old
+      // M-7 fix). Just log it; a genuine connection failure is instead detected in callTool via isConnectionError()
+      // and reacted to there by closing the client, whose `onclose` (above) is the one source of truth for a crash.
+      client.onerror = () => {
+        this.deps.log.warn('connector_transport_error', { id: cfg.id });
       };
 
       // I-1/C-1: connect + listTools share ONE connect budget; each request also carries the SDK's own {timeout, signal}
@@ -279,6 +300,11 @@ export class ConnectorManager {
       const isError = (result as { isError?: boolean }).isError === true;
       return { ok: !isError, text: truncate(flattenContent(result)), ms: this.deps.clock() - started };
     } catch (err) {
+      // M-7 (re-met per N-1's ruling): a genuine connection error — as opposed to a protocol-level onerror — closes
+      // the client. Its `onclose` then records the failure and applies back-off; we don't set state here directly.
+      if (isConnectionError(err) && live.client) {
+        await live.client.close().catch(() => undefined);
+      }
       return { ok: false, text: truncate(`error: ${(err as Error).message}`), ms: this.deps.clock() - started };
     } finally {
       clearTimeout(abortTimer);

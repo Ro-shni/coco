@@ -18,8 +18,9 @@ const fixtureCfg = (over: Partial<ServerConfig> = {}): ServerConfig => ({
 
 /**
  * A minimal, fully in-memory MCP transport for tests that need deterministic control over the handshake
- * (never respond to initialize / never respond to tools/list) without spawning a real process. Responds
- * to `initialize` and `tools/list` like a real server unless told to hang on one of them.
+ * (never respond to initialize / never respond to tools/list, respond to a tool call late, or fail sending a
+ * tool call outright) without spawning a real process. Responds to `initialize` and `tools/list` (advertising
+ * one `thing` tool) like a real server unless told to hang on one of them.
  */
 class ScriptedTransport implements Transport {
   closed = false;
@@ -27,7 +28,16 @@ class ScriptedTransport implements Transport {
   onerror?: (error: Error) => void;
   onmessage?: (message: { jsonrpc: '2.0'; id?: number; method?: string; result?: unknown }) => void;
 
-  constructor(private readonly opts: { hangInit?: boolean; hangListTools?: boolean } = {}) {}
+  constructor(
+    private readonly opts: {
+      hangInit?: boolean;
+      hangListTools?: boolean;
+      /** Reject the send() for a tools/call request with this error (simulates a dead connection). */
+      failCallSend?: Error;
+      /** Delay the tools/call response by this many ms (simulates a response arriving after we gave up). */
+      delayCallResponseMs?: number;
+    } = {},
+  ) {}
 
   async start(): Promise<void> {}
 
@@ -41,13 +51,26 @@ class ScriptedTransport implements Transport {
         }),
       );
     } else if (message.method === 'tools/list' && !this.opts.hangListTools) {
-      queueMicrotask(() => this.onmessage?.({ jsonrpc: '2.0', id: message.id, result: { tools: [] } }));
+      queueMicrotask(() =>
+        this.onmessage?.({
+          jsonrpc: '2.0',
+          id: message.id,
+          result: { tools: [{ name: 'thing', description: '', inputSchema: { type: 'object' } }] },
+        }),
+      );
+    } else if (message.method === 'tools/call') {
+      if (this.opts.failCallSend) throw this.opts.failCallSend;
+      const respond = () => this.onmessage?.({ jsonrpc: '2.0', id: message.id, result: { content: [{ type: 'text', text: 'ok' }] } });
+      const delay = this.opts.delayCallResponseMs ?? 0;
+      if (delay > 0) setTimeout(respond, delay);
+      else queueMicrotask(respond);
     }
     // Everything else (notifications, or a method we're told to hang on): no response.
   }
 
   async close(): Promise<void> {
     this.closed = true;
+    this.onclose?.(); // real transports invoke onclose from close() too; matching that here is what lets onclose cascade
   }
 }
 
@@ -251,20 +274,63 @@ describe('ConnectorManager (scripted / fake transport)', () => {
     expect(events).toContainEqual({ event: 'connector_needs_auth', data: { id: 'fx' } });
   });
 
-  it('M-7: a transport-level error (no close) is treated as a failure with back-off', async () => {
+  it('N-1(a): a non-fatal onerror (e.g. a stray protocol warning) leaves a healthy connector connected', async () => {
+    const events: { event: string; data?: Record<string, unknown> }[] = [];
+    const log: Logger = { info: () => undefined, warn: (event, data) => events.push({ event, data }), error: () => undefined };
     let transport: ScriptedTransport | undefined;
     const factory: TransportFactory = async () => {
       transport = new ScriptedTransport();
       return transport;
     };
+    const { m } = await setup(fixtureCfg(), { transportFactory: factory, log });
+    expect((await m.ensureConnected('fx')).state).toBe('connected');
+
+    // Simulates what the SDK reports for a late response to an already-cancelled call, an unmatched progress
+    // token, etc.: real, but not fatal to the connection.
+    transport?.onerror?.(new Error('Received a response for an unknown message ID: {"jsonrpc":"2.0","id":7}'));
+    await new Promise((r) => setTimeout(r, 20));
+
+    expect(m.statuses()[0]!.state).toBe('connected'); // stays healthy — not marked error
+    expect(transport?.closed).toBe(false); // client/child not closed or orphaned
+    // Still observable, but counts/ids only — no message text.
+    expect(events).toContainEqual({ event: 'connector_transport_error', data: { id: 'fx' } });
+  });
+
+  it('N-1(b): a late tool-call response after our timeout does not fail a healthy connector or orphan its client', async () => {
+    let transport: ScriptedTransport | undefined;
+    const factory: TransportFactory = async () => {
+      transport = new ScriptedTransport({ delayCallResponseMs: 250 });
+      return transport;
+    };
+    const { m } = await setup(fixtureCfg(), { transportFactory: factory, callTimeoutMs: 50 });
+    expect((await m.ensureConnected('fx')).state).toBe('connected');
+
+    const r = await m.callTool('fx__thing', {});
+    expect(r.ok).toBe(false);
+    expect(r.text).toMatch(/timed out/i);
+
+    // The server answers ~200 ms after we already gave up and cancelled; the SDK reports this to onerror as an
+    // unmatched response, not a close. That must not fail (or leave orphaned) an otherwise-healthy connection.
+    await new Promise((res) => setTimeout(res, 350));
+    expect(m.statuses()[0]!.state).toBe('connected');
+    expect(transport?.closed).toBe(false);
+  });
+
+  it('N-1(c)/M-7: a genuine connection error on a tool call closes the client, which then records error + back-off', async () => {
+    let transport: ScriptedTransport | undefined;
+    const factory: TransportFactory = async () => {
+      transport = new ScriptedTransport({ failCallSend: Object.assign(new Error('connect ECONNREFUSED 127.0.0.1:443'), { code: 'ECONNREFUSED' }) });
+      return transport;
+    };
     const { m, advance } = await setup(fixtureCfg(), { transportFactory: factory });
     expect((await m.ensureConnected('fx')).state).toBe('connected');
 
-    transport?.onerror?.(new Error('stream broke'));
-    await new Promise((r) => setTimeout(r, 20));
-    expect(m.statuses()[0]!.state).toBe('error');
+    const r = await m.callTool('fx__thing', {});
+    expect(r.ok).toBe(false);
+    expect(transport?.closed).toBe(true); // callTool closed the client itself on the connection error
+    expect(m.statuses()[0]!.state).toBe('error'); // ...and the client's own onclose recorded the failure
 
-    // and it backs off exactly like any other failure — an immediate retry is blocked
+    // and it backs off exactly like any other failure
     const again = await m.ensureConnected('fx');
     expect(again.state).toBe('error');
     advance(30_000);
