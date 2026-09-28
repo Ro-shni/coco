@@ -3,7 +3,7 @@ import { getDefaultEnvironment, StdioClientTransport } from '@modelcontextprotoc
 import { StreamableHTTPClientTransport } from '@modelcontextprotocol/sdk/client/streamableHttp.js';
 import type { OAuthClientProvider } from '@modelcontextprotocol/sdk/client/auth.js';
 import type { Transport } from '@modelcontextprotocol/sdk/shared/transport.js';
-import { ErrorCode, McpError } from '@modelcontextprotocol/sdk/types.js';
+import { McpError } from '@modelcontextprotocol/sdk/types.js';
 import type { Logger } from '../logger.js';
 import type { ConnectorRegistry } from './registry.js';
 import { secretKey, type SecretStore } from './secrets.js';
@@ -62,16 +62,16 @@ const CONNECTION_ERROR_TEXT = /fetch failed|connection closed/i;
  * also reports but that leaves a perfectly usable connection behind. Walks the `.cause` chain because Node's
  * `fetch()` wraps a refused/reset socket in a top-level `TypeError: fetch failed`.
  *
- * N-4: an `McpError` is the SDK's wrapper for a server-sent JSON-RPC error response — a perfectly healthy server
- * can reply with one whose message text happens to contain "fetch failed" or "connection closed" (e.g. a proxy
- * MCP server reporting *its own* upstream failure). That is not our transport dying, so an `McpError` counts as a
- * connection error only via the SDK's own dedicated marker, `ErrorCode.ConnectionClosed` — never by text-matching
- * its message. The errno/text checks below apply only to errors the transport or `fetch()` itself throws.
+ * N-4/N-7: an `McpError` is never a connection error. It is either the SDK's wrapper for a server-sent JSON-RPC
+ * error response (a healthy server can reply with text like "fetch failed", or with the generic code -32000,
+ * which equals the SDK's `ErrorCode.ConnectionClosed`), or the SDK's own `ConnectionClosed`, which it raises only
+ * from `_onclose` after our `onclose` has already recorded the failure. The errno/text checks below apply only to
+ * errors the transport or `fetch()` itself throws.
  */
 function isConnectionError(err: unknown): boolean {
   let cur: unknown = err;
   for (let i = 0; i < 5 && cur instanceof Error; i++) {
-    if (cur instanceof McpError) return cur.code === ErrorCode.ConnectionClosed;
+    if (cur instanceof McpError) return false;
     const code = (cur as NodeJS.ErrnoException).code;
     if (code && CONNECTION_ERROR_CODES.has(code)) return true;
     if (CONNECTION_ERROR_TEXT.test(cur.message)) return true;

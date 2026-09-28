@@ -385,6 +385,41 @@ describe('ConnectorManager (scripted / fake transport)', () => {
     expect(m.statuses()[0]!.state).toBe('connected'); // and must NOT back off a healthy connector because of it
   });
 
+  it('N-7: a server-reported JSON-RPC error with the generic code -32000 is NOT a dead connection', async () => {
+    let transport: ScriptedTransport | undefined;
+    const factory: TransportFactory = async () => {
+      transport = new ScriptedTransport({ callErrorResponse: { code: -32000, message: 'Server error' } });
+      return transport;
+    };
+    const { m } = await setup(fixtureCfg(), { transportFactory: factory });
+    expect((await m.ensureConnected('fx')).state).toBe('connected');
+
+    // -32000 is JSON-RPC's usual generic "Server error" code, and it equals the SDK's ErrorCode.ConnectionClosed.
+    // A healthy server replying with it must not get its connection closed.
+    const r = await m.callTool('fx__thing', {});
+    expect(r.ok).toBe(false);
+    expect(r.text).toMatch(/Server error/);
+    expect(transport?.closed).toBe(false);
+    expect(m.statuses()[0]!.state).toBe('connected');
+  });
+
+  it('N-6: an errno found only in .cause (top-level text does not match) is treated as a connection error', async () => {
+    let transport: ScriptedTransport | undefined;
+    const factory: TransportFactory = async () => {
+      transport = new ScriptedTransport({
+        failCallSend: new Error('request failed', { cause: Object.assign(new Error('socket hang up'), { code: 'ECONNRESET' }) }),
+      });
+      return transport;
+    };
+    const { m } = await setup(fixtureCfg(), { transportFactory: factory });
+    expect((await m.ensureConnected('fx')).state).toBe('connected');
+
+    const r = await m.callTool('fx__thing', {});
+    expect(r.ok).toBe(false);
+    expect(transport?.closed).toBe(true); // only the .cause walk can find ECONNRESET here
+    expect(m.statuses()[0]!.state).toBe('error');
+  });
+
   it('I-5/M-1: back-off doubles up to a 10 min cap, then resets after a stable (>=60s) connection', async () => {
     let calls = 0;
     let mode: 'fail' | 'succeed' = 'fail';
