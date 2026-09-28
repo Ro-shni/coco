@@ -73,4 +73,16 @@ describe('ConnectorRegistry', () => {
     expect(uniqueId('qmd', new Set(['qmd']))).toBe('qmd-2');
     expect(uniqueId('qmd', new Set(['qmd', 'qmd-2']))).toBe('qmd-3');
   });
+
+  it('degrades gracefully when connectors.yaml has invalid YAML syntax', () => {
+    const d = dir();
+    writeFileSync(join(d, 'connectors.yaml'), 'servers:\n  - [invalid: {yaml: syntax');
+    expect(new ConnectorRegistry(d).list()).toEqual([]);
+  });
+
+  it('degrades gracefully when autonomy.yaml has invalid YAML syntax', () => {
+    const d = dir();
+    writeFileSync(join(d, 'autonomy.yaml'), 'tools:\n  - [invalid: {yaml: syntax');
+    expect(new ConnectorRegistry(d).autonomy('foo__bar')).toBeUndefined();
+  });
 });

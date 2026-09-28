@@ -34,12 +34,27 @@ export class ConnectorRegistry {
   private get autonomyPath(): string { return join(this.configDir, 'autonomy.yaml'); }
 
   reload(): void {
-    const raw = existsSync(this.serversPath) ? (parse(readFileSync(this.serversPath, 'utf8')) as { servers?: unknown[] } | null) : null;
+    let raw: { servers?: unknown[] } | null = null;
+    if (existsSync(this.serversPath)) {
+      try {
+        raw = parse(readFileSync(this.serversPath, 'utf8')) as { servers?: unknown[] } | null;
+      } catch {
+        // Ignore parse errors; degrade to empty servers
+      }
+    }
     this.servers = (raw?.servers ?? []).flatMap((s) => {
       const r = ServerConfig.safeParse(s);
       return r.success ? [r.data] : [];
     });
-    const modes = existsSync(this.autonomyPath) ? (parse(readFileSync(this.autonomyPath, 'utf8')) as { tools?: Record<string, unknown> } | null) : null;
+
+    let modes: { tools?: Record<string, unknown> } | null = null;
+    if (existsSync(this.autonomyPath)) {
+      try {
+        modes = parse(readFileSync(this.autonomyPath, 'utf8')) as { tools?: Record<string, unknown> } | null;
+      } catch {
+        // Ignore parse errors; degrade to empty modes
+      }
+    }
     this.modes = Object.fromEntries(
       Object.entries(modes?.tools ?? {}).filter((e): e is [string, AutonomyMode] => typeof e[1] === 'string' && MODES.has(e[1])),
     );

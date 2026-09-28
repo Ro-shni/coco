@@ -4,7 +4,7 @@ export const DEFAULT_DENYLIST: readonly string[] = ['int.meesho.int', 'prd.meesh
 export function isDeniedHost(url: string, denylist: readonly string[] = DEFAULT_DENYLIST): boolean {
   let host: string;
   try {
-    host = new URL(url).hostname.toLowerCase();
+    host = new URL(url).hostname.toLowerCase().replace(/\.$/, '');
   } catch {
     return false;
   }

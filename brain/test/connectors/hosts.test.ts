@@ -12,6 +12,8 @@ describe('isDeniedHost', () => {
     ['https://notprd.meesho.int.evil.com', false],
     ['https://myprd.meesho.int', false], // suffix match needs a dot boundary
     ['not a url', false],
+    ['http://prd.meesho.int./x', true], // trailing dot should not bypass
+    ['https://a.prd.meesho.int.:8443/', true], // trailing dot with subdomain should not bypass
   ])('%s → %s', (url, denied) => {
     expect(isDeniedHost(url)).toBe(denied);
   });
