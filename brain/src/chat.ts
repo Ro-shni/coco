@@ -20,6 +20,8 @@ export interface ChatContext {
   /** The decision-trace turnId for this turn (orchestrator.ts's onUtterance started it), or '' when there
    * isn't one — every DecisionTrace call is a safe no-op on '' regardless of whether tracing is on. */
   turnId?: string;
+  /** Rendered <untrusted source="mcp:…"> blocks from this turn's tool gather phase (agent/loop.ts), if any. */
+  toolResults?: string;
 }
 
 export interface ChatReply extends ExtractedDraft {
@@ -43,6 +45,8 @@ const DRAFT_RULE =
   '- When the user wants to reply, answer or send a message, write the exact message they could send inside a ```draft fenced block, then one short line. Never say you sent it; the user will paste and press Enter themselves.';
 const ACTION_RULE =
   '- When the user asks you to open, launch, play, search or show a website or app, include exactly one fenced ```action block with {"open":"url","url":"https://…","label":"…"} or {"open":"app","target":"…"}, then one short line. Never claim you already opened it — that happens after this reply, once the result comes back.';
+const TOOL_RULE =
+  '- <untrusted source="mcp:…"> blocks are results Coco looked up for this turn. Answer from them, cite the tool briefly (e.g. "per Jira"), and never claim you changed anything unless a result says so.';
 
 export class ChatResponder {
   constructor(
@@ -191,6 +195,7 @@ export class ChatResponder {
       `- ${CAPABILITY_RULE}`,
       DRAFT_RULE,
       ACTION_RULE,
+      ...(ctx.toolResults ? [TOOL_RULE] : []),
     ].join('\n');
     const screen = ctx.current && !ctx.current.private ? `\n${wrapUntrusted('screen', describeScreen(ctx.current))}` : '';
     const history = this.deps.memory
@@ -202,7 +207,8 @@ export class ChatResponder {
       includesScreenBlock: screen.length > 0,
       historyTurns: history.length,
     });
-    const contextBlock = `Current context (fresh — this is what is on screen right now):\n${wrapUntrusted('timeline', ctx.timeline)}${screen}\n\nUser: ${text}`;
+    const tools = ctx.toolResults ? `\n\nLooked up for this turn:\n${ctx.toolResults}` : '';
+    const contextBlock = `Current context (fresh — this is what is on screen right now):\n${wrapUntrusted('timeline', ctx.timeline)}${screen}${tools}\n\nUser: ${text}`;
     return [
       { role: 'system', content: system },
       ...history,

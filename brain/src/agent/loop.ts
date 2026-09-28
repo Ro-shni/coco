@@ -121,6 +121,10 @@ export class ToolLoop {
     return { runs: [run], toolContext: this.renderContext([run]) };
   }
 
+  recordDecision(call: PendingToolCall, decision: 'denied' | 'expired'): void {
+    this.deps.audit.record({ ts: this.deps.clock(), serverId: call.serverId, tool: call.tool, decision, ok: null, ms: null, resultChars: null });
+  }
+
   renderContext(runs: ToolRun[]): string {
     return runs.map((r) => this.wrapResult(r)).join('\n\n');
   }

@@ -245,6 +245,17 @@ describe('ToolLoop.runConfirmed', () => {
   });
 });
 
+describe('ToolLoop.recordDecision', () => {
+  it('audits denied and expired confirms without calling the tool', () => {
+    const s = setup([]);
+    const call = { qualified: 'atlassian__createJiraIssue', serverId: 'atlassian', tool: 'createJiraIssue', args: {}, reason: 'write_default' };
+    s.loop.recordDecision(call, 'denied');
+    s.loop.recordDecision(call, 'expired');
+    expect(s.audit.list().map((r) => r.decision)).toEqual(['expired', 'denied']);
+    expect(s.callTool).not.toHaveBeenCalled();
+  });
+});
+
 describe('ToolLoop result truncation (M3)', () => {
   it('truncates an oversized result to 4000 chars before it reaches the gather prompt or toolContext, regardless of the manager', async () => {
     const huge = 'x'.repeat(5000);

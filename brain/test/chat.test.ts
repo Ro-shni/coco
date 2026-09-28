@@ -457,4 +457,28 @@ describe('ChatResponder', () => {
       await expect(make(gw).chat.reply('hi', { timeline: 't', incidentMode: false })).resolves.toEqual({ text: 'ok.', draft: null });
     });
   });
+
+  describe('tool results in the chat prompt', () => {
+    it('includes tool results after the screen block, with the tool rule', async () => {
+      const seen: { role: string; content: string }[][] = [];
+      const gateway = { chat: async (req: { messages: { role: string; content: string }[] }) => { seen.push(req.messages); return 'Per Jira, DEVOPS-35236 is In Progress.'; }, health: async () => true, supportsVision: async () => false };
+      const r = new ChatResponder({ gateway, memory: new Memory(':memory:'), persona: () => 'P', userName: '', clock: () => 0 });
+      const toolResults = '<untrusted source="mcp:atlassian/getJiraIssue">\nok\nstatus: In Progress\n</untrusted>';
+      const out = await r.reply('status of DEVOPS-35236?', { timeline: '', incidentMode: false, intentText: 'status of DEVOPS-35236?', toolResults });
+      expect(out.text).toBe('Per Jira, DEVOPS-35236 is In Progress.');
+      const msgs = seen[0]!;
+      expect(msgs[0]!.content).toContain('blocks are results Coco looked up for this turn');
+      expect(msgs.at(-1)!.content).toContain('Looked up for this turn:\n' + toolResults);
+      expect(msgs.at(-1)!.content.indexOf('Looked up')).toBeLessThan(msgs.at(-1)!.content.indexOf('User: status'));
+    });
+
+    it('omits the tool rule and block when there are no tool results', async () => {
+      const seen: { role: string; content: string }[][] = [];
+      const gateway = { chat: async (req: { messages: { role: string; content: string }[] }) => { seen.push(req.messages); return 'Hi.'; }, health: async () => true, supportsVision: async () => false };
+      const r = new ChatResponder({ gateway, memory: new Memory(':memory:'), persona: () => 'P', userName: '', clock: () => 0 });
+      await r.reply('hi', { timeline: '', incidentMode: false, intentText: 'hi' });
+      expect(seen[0]![0]!.content).not.toContain('looked up for this turn');
+      expect(seen[0]!.at(-1)!.content).not.toContain('Looked up');
+    });
+  });
 });

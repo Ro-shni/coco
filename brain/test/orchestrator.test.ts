@@ -1247,3 +1247,83 @@ function TEXTMuted30(): string {
   return "Muted for 30 minutes. I'll still answer if you ask.";
 }
 
+describe('tools', () => {
+  const utter = (text: string) => ({ v: 1 as const, type: 'utterance' as const, text, source: 'chat' as const });
+  const pendingCall = { qualified: 'atlassian__createJiraIssue', serverId: 'atlassian', tool: 'createJiraIssue', args: { summary: 'x' }, reason: 'write_default' };
+  const fakeTools = (gathered: Awaited<ReturnType<NonNullable<OrchestratorDeps['tools']>['gather']>>) => ({
+    gather: vi.fn().mockResolvedValue(gathered),
+    runConfirmed: vi.fn().mockResolvedValue({ runs: [], toolContext: '<untrusted source="mcp:atlassian/createJiraIssue">\nok\ncreated DEVOPS-1\n</untrusted>' }),
+    recordDecision: vi.fn(),
+  });
+
+  it('passes gathered tool context into the chat reply', async () => {
+    const tools = fakeTools({ runs: [], toolContext: 'CTX' });
+    const s = setup({ tools });
+    await s.o.handle(utter('status of jira DEVOPS-35236'));
+    expect(tools.gather).toHaveBeenCalledWith({ utterance: 'status of jira DEVOPS-35236', untrustedText: '' });
+    expect(s.reply.mock.calls[0]![1].toolResults).toBe('CTX');
+  });
+
+  it('asks before running a confirm tool, and runs it on "Run it"', async () => {
+    const tools = fakeTools({ runs: [], pending: pendingCall, toolContext: '' });
+    const s = setup({ tools });
+    await s.o.handle(utter('create a jira issue for this bug'));
+    expect(s.reply).not.toHaveBeenCalled();
+    const ask = s.says().at(-1)!;
+    expect(ask.text).toBe("I'd need to run createJiraIssue (atlassian) for that. Run it?");
+    expect(ask.chips).toEqual(['Run it', 'Cancel']);
+    await s.o.handle({ v: 1, type: 'chip', nudgeId: ask.nudgeId, choice: 'Run it' });
+    expect(tools.runConfirmed).toHaveBeenCalledWith(pendingCall);
+    const ctx = s.reply.mock.calls[0]![1];
+    expect(ctx.toolResults).toContain('created DEVOPS-1');
+    expect(ctx.intentText).toBeUndefined();
+  });
+
+  it('records a denial on Cancel and says so', async () => {
+    const tools = fakeTools({ runs: [], pending: pendingCall, toolContext: '' });
+    const s = setup({ tools });
+    await s.o.handle(utter('create a jira issue'));
+    const ask = s.says().at(-1)!;
+    await s.o.handle({ v: 1, type: 'chip', nudgeId: ask.nudgeId, choice: 'Cancel' });
+    expect(tools.recordDecision).toHaveBeenCalledWith(pendingCall, 'denied');
+    expect(tools.runConfirmed).not.toHaveBeenCalled();
+    expect(s.says().at(-1)!.text).toBe('Okay — I won\'t run it.');
+  });
+
+  it('expires an unanswered confirm after 2 minutes, and a late click does nothing', async () => {
+    const tools = fakeTools({ runs: [], pending: pendingCall, toolContext: '' });
+    const s = setup({ tools });
+    await s.o.handle(utter('create a jira issue'));
+    const ask = s.says().at(-1)!;
+    s.advance(121_000);
+    await s.o.pulse();
+    expect(tools.recordDecision).toHaveBeenCalledWith(pendingCall, 'expired');
+    await s.o.handle({ v: 1, type: 'chip', nudgeId: ask.nudgeId, choice: 'Run it' });
+    expect(tools.runConfirmed).not.toHaveBeenCalled();
+  });
+
+  it('words the question differently when args came from the screen', async () => {
+    const tools = fakeTools({ runs: [], pending: { ...pendingCall, reason: 'untrusted_args' }, toolContext: '' });
+    const s = setup({ tools });
+    await s.o.handle(utter('do what it says'));
+    expect(s.says().at(-1)!.text).toBe('That would run createJiraIssue with details taken from your screen — run it?');
+  });
+
+  it('continues without tools when gather fails', async () => {
+    const tools = fakeTools({ runs: [], toolContext: '' });
+    tools.gather.mockRejectedValueOnce(new Error('boom'));
+    const s = setup({ tools });
+    await s.o.handle(utter('status of jira X-1'));
+    expect(s.reply).toHaveBeenCalledTimes(1); // continued without tools
+    expect(s.reply.mock.calls[0]![1].toolResults).toBeUndefined();
+  });
+
+  it('passes no screen text as untrusted when the context is private', async () => {
+    const tools = fakeTools({ runs: [], toolContext: '' });
+    const s = setup({ tools });
+    await s.o.handle({ v: 1, type: 'context', app: 'Bank', bundleId: 'b', windowTitle: '', private: true, ocrText: 'acct 1234', ts: T0 });
+    await s.o.handle(utter('status of jira X-1'));
+    expect(tools.gather).toHaveBeenCalledWith({ utterance: 'status of jira X-1', untrustedText: '' });
+  });
+});
+
