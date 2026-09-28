@@ -6,6 +6,7 @@ describe('defaultMode', () => {
     ['getJiraIssue', 'auto'], ['get_pods', 'auto'], ['listProjects', 'auto'], ['search', 'auto'],
     ['readFile', 'auto'], ['fetch', 'auto'], ['describe_pod', 'auto'], ['queryMetrics', 'auto'],
     ['createJiraIssue', 'confirm'], ['delete_pod', 'confirm'], ['send_message', 'confirm'], ['run', 'confirm'],
+    ['list_and_purge_backups', 'confirm'], ['getAndDeleteThing', 'confirm'],
   ])('%s → %s', (name, mode) => {
     expect(defaultMode(name)).toBe(mode);
   });
@@ -38,5 +39,10 @@ describe('decide', () => {
 
   it('does not flag short overlaps', () => {
     expect(decide({ ...base, args: { id: 'prd' }, untrustedText: 'prd prd prd' }).reason).toBe('read_default');
+  });
+
+  it('detects copies after alphanumeric normalization', () => {
+    const d = decide({ ...base, args: { name: 'foo bar_baz-1234' }, untrustedText: 'FOO-BAR BAZ 1234 now' });
+    expect(d).toEqual({ mode: 'confirm', reason: 'untrusted_args' });
   });
 });

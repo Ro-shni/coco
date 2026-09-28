@@ -1,4 +1,5 @@
 import type { ToolInfo } from '../connectors/types.js';
+import { READ } from './autonomy.js';
 
 export const MAX_TOOLS = 6;
 
@@ -11,9 +12,6 @@ const withSingular = (w: string): string[] => (w.endsWith('s') && w.length > 3 ?
 
 const splitIdent = (s: string): string[] =>
   s.replace(/([a-z0-9])([A-Z])/g, '$1 $2').toLowerCase().split(/[^a-z0-9]+/).filter(Boolean).flatMap(withSingular);
-
-/** Tie-break: prefer read-like tools, so "status of X" picks getX over createX. */
-const READ_LIKE = /^(get|list|search|read|fetch|describe|query)/i;
 
 const queryTokens = (q: string): string[] =>
   [...new Set(q.toLowerCase().split(/[^a-z0-9]+/).filter((w) => w.length > 1 && !STOP.has(w)).flatMap(withSingular))];
@@ -31,7 +29,7 @@ export function narrowTools(query: string, tools: readonly ToolInfo[], max = MAX
       if (descToks.has(w)) score += 1;
       if (serverToks.has(w)) score += 2;
     }
-    if (score > 0 && READ_LIKE.test(t.name)) score += 1;
+    if (score > 0 && READ.test(t.name)) score += 1;
     return { t, score };
   });
   return scored
