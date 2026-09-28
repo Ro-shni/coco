@@ -13,6 +13,9 @@ export type SecurityRunner = (args: string[], stdin: string | undefined) => Prom
 const KEY = /^coco\.connector\.[a-z0-9-]+\.[A-Za-z0-9_.-]+$/;
 const NOT_FOUND = 44;
 const ACCOUNT = 'coco';
+// I-1: a `security` invocation can otherwise hang forever (e.g. a Keychain "allow access" prompt nobody answers),
+// which stalls every ensureConnected/callTool for the server that needed the secret. Kill it and reject instead.
+const SECURITY_TIMEOUT_MS = 10_000;
 
 export const runSecurity: (args: string[], stdin: string | undefined, executable?: string) => Promise<{ code: number; stdout: string }> = (args, stdin, executable = '/usr/bin/security') =>
   new Promise((resolve, reject) => {
@@ -20,6 +23,7 @@ export const runSecurity: (args: string[], stdin: string | undefined, executable
     const settle = (outcome: { resolve: { code: number; stdout: string } } | { reject: Error }) => {
       if (settled) return;
       settled = true;
+      clearTimeout(timer);
       if ('resolve' in outcome) {
         resolve(outcome.resolve);
       } else {
@@ -28,6 +32,10 @@ export const runSecurity: (args: string[], stdin: string | undefined, executable
     };
 
     const child = spawn(executable, args, { stdio: ['pipe', 'pipe', 'ignore'] });
+    const timer = setTimeout(() => {
+      child.kill('SIGKILL');
+      settle({ reject: new Error(`security timed out after ${SECURITY_TIMEOUT_MS} ms`) });
+    }, SECURITY_TIMEOUT_MS);
     let stdout = '';
     child.stdout.on('data', (d: Buffer) => (stdout += d.toString('utf8')));
     child.on('error', (err) => settle({ reject: err as Error }));

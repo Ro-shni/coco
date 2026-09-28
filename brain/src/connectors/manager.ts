@@ -15,6 +15,10 @@ const MAX_RESULT_CHARS = 4000;
 const TRUNC = '…[truncated]';
 const BACKOFF_MIN_MS = 30_000;
 const BACKOFF_MAX_MS = 600_000;
+/** M-1: only reset the back-off multiplier once a connection has stayed up at least this long. */
+const STABLE_CONNECTION_MS = 60_000;
+const DEFAULT_CONNECT_TIMEOUT_MS = 15_000;
+const DEFAULT_CALL_TIMEOUT_MS = 20_000;
 
 interface Live {
   state: ServerState;
@@ -25,6 +29,12 @@ interface Live {
   retryAt: number;
   backoffMs: number;
   connecting?: Promise<void>;
+  /** I-2: bumped on every explicit disconnect so a connect attempt in flight at the time can tell it has been superseded. */
+  epoch: number;
+  /** I-2/I-4: aborts the in-flight connect's SDK requests so `disconnect` does not have to wait out the connect budget. */
+  abort?: AbortController;
+  /** M-1: set when a connect succeeds; cleared on any failure. Used to decide whether the back-off resets. */
+  connectedAt?: number;
 }
 
 export function flattenContent(result: unknown): string {
@@ -38,6 +48,9 @@ export function flattenContent(result: unknown): string {
 }
 
 const truncate = (s: string): string => (s.length <= MAX_RESULT_CHARS ? s : s.slice(0, MAX_RESULT_CHARS - TRUNC.length) + TRUNC);
+
+/** M-6: status error text reaches Studio's status API, so strip anything that looks like a URL (query strings, endpoints). */
+const stripUrls = (s: string): string => s.replace(/https?:\/\/\S+/gi, '<url>');
 
 function withTimeout<T>(p: Promise<T>, ms: number, what: string): Promise<T> {
   return new Promise<T>((resolve, reject) => {
@@ -67,7 +80,7 @@ export class ConnectorManager {
   private entry(id: string): Live {
     let e = this.live.get(id);
     if (!e) {
-      e = { state: 'disconnected', since: this.deps.clock(), tools: [], retryAt: 0, backoffMs: BACKOFF_MIN_MS };
+      e = { state: 'disconnected', since: this.deps.clock(), tools: [], retryAt: 0, backoffMs: BACKOFF_MIN_MS, epoch: 0 };
       this.live.set(id, e);
     }
     return e;
@@ -105,7 +118,8 @@ export class ConnectorManager {
     if (!cfg.enabled) return this.status(id);
     const e = this.entry(id);
     if (e.state === 'connected') return this.status(id);
-    if (e.state === 'error' && this.deps.clock() < e.retryAt) return this.status(id);
+    // I-3: needs_auth backs off exactly like error, so it does not reconnect (and potentially re-prompt) on every call.
+    if ((e.state === 'error' || e.state === 'needs_auth') && this.deps.clock() < e.retryAt) return this.status(id);
     e.connecting ??= this.connect(cfg, e).finally(() => (e.connecting = undefined));
     await e.connecting;
     return this.status(id);
@@ -146,21 +160,55 @@ export class ConnectorManager {
   };
 
   private async connect(cfg: ServerConfig, e: Live): Promise<void> {
+    const epoch = e.epoch;
+    const controller = new AbortController();
+    e.abort = controller;
     this.setState(e, 'connecting');
+    let client: Client | undefined;
     try {
       const transport = await (this.deps.transportFactory ?? this.defaultTransport)(cfg, await this.resolveSecrets(cfg));
-      const client = new Client({ name: 'coco', version: '0.1.0' });
+      // I-2: a disconnect() that landed while we were still resolving secrets/building the transport wins.
+      if (e.epoch !== epoch) {
+        await transport.close().catch(() => undefined);
+        return;
+      }
+      client = new Client({ name: 'coco', version: '0.1.0' });
       client.onclose = () => {
         if (e.client === client) {
           e.client = undefined;
-          this.fail(e, 'server closed the connection');
+          this.fail(cfg.id, e, 'server closed the connection');
         }
       };
-      await withTimeout(client.connect(transport), this.deps.connectTimeoutMs ?? 15_000, 'connect');
-      const listed = await withTimeout(client.listTools(), this.deps.connectTimeoutMs ?? 15_000, 'listTools');
+      // M-7: an unreachable HTTP server can error without ever closing; treat a transport error as a failure too.
+      client.onerror = (error: Error) => {
+        if (e.client === client) {
+          e.client = undefined;
+          this.fail(cfg.id, e, error.message.slice(0, 200));
+        }
+      };
+
+      // I-1/C-1: connect + listTools share ONE connect budget; each request also carries the SDK's own {timeout, signal}
+      // so the SDK itself gives up (and, for callTool's counterpart, cancels) rather than relying solely on our wrapper.
+      const budgetMs = this.deps.connectTimeoutMs ?? DEFAULT_CONNECT_TIMEOUT_MS;
+      const connectStarted = Date.now();
+      await withTimeout(client.connect(transport, { timeout: budgetMs, signal: controller.signal }), budgetMs, 'connect');
+      if (e.epoch !== epoch) {
+        await client.close().catch(() => undefined);
+        return;
+      }
+      const listBudgetMs = Math.max(1, budgetMs - (Date.now() - connectStarted));
+      const listed = await withTimeout(
+        client.listTools(undefined, { timeout: listBudgetMs, signal: controller.signal }),
+        listBudgetMs,
+        'listTools',
+      );
+      if (e.epoch !== epoch) {
+        await client.close().catch(() => undefined);
+        return;
+      }
       e.client = client;
       this.setState(e, 'connected');
-      e.backoffMs = BACKOFF_MIN_MS;
+      e.connectedAt = this.deps.clock();
       e.tools = listed.tools.map((t) => ({
         serverId: cfg.id,
         name: t.name,
@@ -170,47 +218,84 @@ export class ConnectorManager {
       }));
       this.deps.log.info('connector_connected', { id: cfg.id, tools: e.tools.length });
     } catch (err) {
+      // C-1: close the client (which closes its transport, killing a stdio child) on every failure path.
+      await client?.close().catch(() => undefined);
+      if (e.epoch !== epoch) return; // superseded by a disconnect(); it already recorded the state we want.
       const name = (err as Error).name;
       if (name === 'UnauthorizedError') {
-        this.setState(e, 'needs_auth', 'sign-in required');
+        this.fail(cfg.id, e, 'sign-in required', 'needs_auth');
       } else {
-        this.fail(e, (err as Error).message.slice(0, 200));
+        this.fail(cfg.id, e, (err as Error).message.slice(0, 200));
       }
+    } finally {
+      if (e.abort === controller) e.abort = undefined;
     }
   }
 
-  private fail(e: Live, message: string): void {
-    this.setState(e, 'error', message);
+  private fail(id: string, e: Live, message: string, state: ServerState = 'error'): void {
+    // M-1: only forgive past back-off once the connection actually stayed up for a while; a flapping server keeps backing off.
+    if (e.connectedAt !== undefined && this.deps.clock() - e.connectedAt >= STABLE_CONNECTION_MS) {
+      e.backoffMs = BACKOFF_MIN_MS;
+    }
+    e.connectedAt = undefined;
+    this.setState(e, state, stripUrls(message));
     e.retryAt = this.deps.clock() + e.backoffMs;
     e.backoffMs = Math.min(e.backoffMs * 2, BACKOFF_MAX_MS);
-    this.deps.log.warn('connector_error', { state: 'error' });
+    // M-3: include the id so the log line is actionable; needs_auth gets its own event (it was not logged at all before).
+    if (state === 'needs_auth') {
+      this.deps.log.warn('connector_needs_auth', { id });
+    } else {
+      this.deps.log.warn('connector_error', { id, state: 'error' });
+    }
   }
 
   async callTool(qualified: string, args: Record<string, unknown>): Promise<ToolResult> {
     const started = this.deps.clock();
     const sep = qualified.indexOf('__');
     const serverId = sep === -1 ? '' : qualified.slice(0, sep);
-    if (serverId) await this.ensureConnected(serverId);
+    const cfg = serverId ? this.deps.registry.get(serverId) : undefined;
+    if (cfg) await this.ensureConnected(serverId);
     const tool = this.tools().find((t) => t.qualified === qualified);
-    const e = tool ? this.live.get(tool.serverId) : undefined;
-    if (!tool || !e?.client) return { ok: false, text: `unknown tool ${qualified}`, ms: 0 };
+    const live = tool ? this.live.get(tool.serverId) : undefined;
+    if (!tool || !live?.client) {
+      // M-2: a tool the caller knows about, on a server that just isn't up right now, is a different failure than a typo.
+      if (cfg) {
+        const state = this.status(serverId).state;
+        if (state !== 'connected') return { ok: false, text: `server ${serverId} is unavailable (${state})`, ms: this.deps.clock() - started };
+      }
+      return { ok: false, text: `unknown tool ${qualified}`, ms: this.deps.clock() - started };
+    }
+    const callTimeoutMs = this.deps.callTimeoutMs ?? DEFAULT_CALL_TIMEOUT_MS;
+    // I-4: an AbortController tied to the call timeout, on top of the SDK's own {timeout}, so a timed-out call is actually
+    // cancelled (the SDK sends notifications/cancelled) instead of just being ignored by us while it keeps running server-side.
+    const controller = new AbortController();
+    const abortTimer = setTimeout(() => controller.abort(new Error(`tool call timed out after ${callTimeoutMs} ms`)), callTimeoutMs);
     try {
-      const result = await withTimeout(e.client.callTool({ name: tool.name, arguments: args }), this.deps.callTimeoutMs ?? 20_000, 'tool call');
+      const result = await withTimeout(
+        live.client.callTool({ name: tool.name, arguments: args }, undefined, { timeout: callTimeoutMs, signal: controller.signal }),
+        callTimeoutMs,
+        'tool call',
+      );
       const isError = (result as { isError?: boolean }).isError === true;
       return { ok: !isError, text: truncate(flattenContent(result)), ms: this.deps.clock() - started };
     } catch (err) {
       return { ok: false, text: truncate(`error: ${(err as Error).message}`), ms: this.deps.clock() - started };
+    } finally {
+      clearTimeout(abortTimer);
     }
   }
 
   async disconnect(id: string): Promise<void> {
     const e = this.live.get(id);
-    const client = e?.client;
-    if (e) {
-      e.client = undefined;
-      this.setState(e, 'disconnected');
-    }
+    if (!e) return;
+    e.epoch++; // I-2: any connect in flight now knows it has been superseded.
+    e.abort?.abort(new Error('disconnected')); // I-2/I-4: don't make the caller wait out the connect budget for a discarded connect.
+    const pending = e.connecting;
+    const client = e.client;
+    e.client = undefined;
+    this.setState(e, 'disconnected');
     await client?.close().catch(() => undefined);
+    if (pending) await pending.catch(() => undefined); // wait for the in-flight connect to finish closing its own client.
   }
 
   async closeAll(): Promise<void> {
