@@ -95,6 +95,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         overlay.onChip = { [weak self] id, choice in self?.brain.send(.chip(ChipPayload(nudgeId: id, choice: choice))) }
         overlay.onOpenChat = { [weak self] in self?.chat.show() }
         chat.onChip = { [weak self] id, choice in self?.brain.send(.chip(ChipPayload(nudgeId: id, choice: choice))) }
+        chat.onOpenStudio = { [weak self] in self?.openStudio() }
         chat.onSend = { [weak self] text in
             guard let self else { return }
             let wasTruncated = text.count > Self.chatMaxChars

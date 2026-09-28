@@ -26,12 +26,17 @@ struct ChatView: View {
     var onSend: (String) -> Void
     /// (nudgeId, chip choice) — same chip-forwarding contract as the overlay bubble's chips.
     var onChip: (String, String) -> Void
+    var onOpenStudio: () -> Void
 
     var body: some View {
         VStack(spacing: 0) {
-            Text("brain: \(model.brainStatus)")
-                .font(.caption).foregroundStyle(.secondary)
-                .frame(maxWidth: .infinity, alignment: .leading).padding(8)
+            HStack {
+                Text("brain: \(model.brainStatus)")
+                    .font(.caption).foregroundStyle(.secondary)
+                Spacer()
+                Button("Studio", action: onOpenStudio).font(.caption)
+            }
+            .padding(8)
             ScrollViewReader { proxy in
                 ScrollView {
                     LazyVStack(alignment: .leading, spacing: 8) {
@@ -99,6 +104,7 @@ final class ChatWindowController {
     let model = ChatModel()
     var onSend: ((String) -> Void)?
     var onChip: ((String, String) -> Void)?
+    var onOpenStudio: (() -> Void)?
     private var window: NSWindow?
 
     var isVisible: Bool { window?.isVisible ?? false }
@@ -113,7 +119,8 @@ final class ChatWindowController {
             w.contentView = NSHostingView(rootView: ChatView(
                 model: model,
                 onSend: { [weak self] in self?.onSend?($0) },
-                onChip: { [weak self] nudgeId, choice in self?.onChip?(nudgeId, choice) }))
+                onChip: { [weak self] nudgeId, choice in self?.onChip?(nudgeId, choice) },
+                onOpenStudio: { [weak self] in self?.onOpenStudio?() }))
             w.center()
             window = w
         }
