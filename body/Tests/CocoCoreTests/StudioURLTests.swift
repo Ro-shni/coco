@@ -49,4 +49,13 @@ import Testing
             #expect(StudioURL.parseNonce(bad) == nil)
         }
     }
+
+    /// A `$`-anchored regex (this implementation's earlier approach) matches immediately before a trailing
+    /// line terminator as well as at the true end of string, so 64 valid hex chars plus a trailing "\n" must
+    /// still be rejected — the check has to be exact, not merely "starts with 64 hex chars".
+    @Test func parseNonceRejectsTrailingNewline() {
+        let hex = String(repeating: "a", count: 64)
+        let withTrailingNewline = Data("{\"nonce\":\"\(hex)\\n\"}".utf8)
+        #expect(StudioURL.parseNonce(withTrailingNewline) == nil)
+    }
 }

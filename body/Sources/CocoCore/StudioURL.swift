@@ -26,18 +26,24 @@ public enum StudioURL {
         return .block
     }
 
-    /// Matches the brain's `LAUNCH_NONCE` pattern exactly (brain/src/studio/http.ts): 32 bytes of entropy,
-    /// hex-encoded lowercase -> 64 characters.
-    private static let noncePattern = try! NSRegularExpression(pattern: "^[0-9a-f]{64}$")
+    /// Matches the brain's `LAUNCH_NONCE` shape exactly (brain/src/studio/http.ts): 32 bytes of entropy,
+    /// hex-encoded lowercase -> exactly 64 characters. Checked directly on UTF-8 bytes rather than with a
+    /// `$`-anchored regex: `NSRegularExpression`'s default `$` semantics also match immediately before a
+    /// trailing line terminator, so a value of 64 hex chars plus a trailing "\n" would incorrectly pass.
+    private static func isValidNonce(_ s: String) -> Bool {
+        let bytes = s.utf8
+        guard bytes.count == 64 else { return false }
+        return bytes.allSatisfy { (0x30...0x39).contains($0) || (0x61...0x66).contains($0) }  // '0'-'9', 'a'-'f'
+    }
 
-    /// Parses the `POST /api/launch-nonce` response body. Accepts only `{"nonce":"<64 lowercase hex chars>"}` —
-    /// wrong shape, wrong length, uppercase hex, or unparseable JSON all return nil, so a malformed or
-    /// unexpected response can never become a value the caller trusts.
+    /// Parses the `POST /api/launch-nonce` response body. Accepts only `{"nonce":"<exactly 64 lowercase hex
+    /// chars>"}` — wrong shape, wrong length (including a trailing newline or other stray character), uppercase
+    /// hex, or unparseable JSON all return nil, so a malformed or unexpected response can never become a value
+    /// the caller trusts.
     public static func parseNonce(_ data: Data) -> String? {
         struct Response: Decodable { let nonce: String }
         guard let response = try? JSONDecoder().decode(Response.self, from: data) else { return nil }
-        let range = NSRange(response.nonce.startIndex..., in: response.nonce)
-        guard noncePattern.firstMatch(in: response.nonce, range: range) != nil else { return nil }
+        guard isValidNonce(response.nonce) else { return nil }
         return response.nonce
     }
 }

@@ -103,13 +103,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             self.brain.send(.utterance(UtterancePayload(text: String(text.prefix(Self.chatMaxChars)), source: .chat)))
         }
         menu.onOpenChat = { [weak self] in self?.chat.show() }
-        menu.onOpenStudio = { [weak self] in
-            guard let self, let port = self.brain.port else {
-                FileLog.body.warn("studio: brain not ready")
-                return
-            }
-            self.studio.show(port: port, token: self.brain.studioToken)
-        }
+        menu.onOpenStudio = { [weak self] in self?.openStudio() }
         menu.onPermissions = { [weak self] in self?.permissions.show() }
         menu.onTogglePause = { [weak self] in self?.togglePause() }
         menu.onSetHome = { [weak self] spec in self?.overlay.setHome(spec) }
@@ -212,6 +206,18 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         perception.paused = paused
         menu.setPaused(paused)
         overlay.showLocal(paused ? "Not watching. ⌃⌥P to resume." : "Watching again.")
+    }
+
+    /// Shared by the menu item and the chat window's Studio button. When the brain hasn't reported a port yet,
+    /// shows the same "not ready" alert the window controller shows on a failed nonce fetch — one consistent,
+    /// visible outcome for every "Studio isn't ready" case, not just a silent log.
+    private func openStudio() {
+        guard let port = brain.port else {
+            FileLog.body.warn("studio: brain not ready")
+            studio.showNotReadyAlert()
+            return
+        }
+        studio.show(port: port, token: brain.studioToken)
     }
 
     /// ⌃⌥P toggles watching. The global monitor needs Accessibility; the local one covers Coco's own windows.

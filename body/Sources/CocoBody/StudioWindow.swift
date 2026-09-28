@@ -26,7 +26,7 @@ final class StudioWindowController: NSObject, WKNavigationDelegate, WKUIDelegate
             guard let self else { return }
             guard let nonce else {
                 FileLog.body.warn("studio: couldn't mint a launch nonce")
-                self.showUnavailableAlert()
+                self.showNotReadyAlert()
                 return
             }
             self.loadAndShow(port: port, nonce: nonce)
@@ -73,8 +73,12 @@ final class StudioWindowController: NSObject, WKNavigationDelegate, WKUIDelegate
         }.resume()
     }
 
-    private func showUnavailableAlert() {
+    /// The one "Studio isn't ready" alert, shared by every not-ready path (no port yet, and a failed nonce
+    /// fetch) so the user gets consistent, visible feedback regardless of which one fired. Activates the app
+    /// first, matching this codebase's convention for user-facing UI (ChatWindow.swift, PermissionsWindow.swift).
+    func showNotReadyAlert() {
         dispatchPrecondition(condition: .onQueue(.main))
+        NSApp.activate(ignoringOtherApps: true)
         let alert = NSAlert()
         alert.alertStyle = .warning
         alert.messageText = "Couldn't open Coco Studio — the brain isn't ready yet."
