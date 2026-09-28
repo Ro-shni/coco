@@ -41,7 +41,17 @@ function mcpFilesIn(dirs: string[]): string[] {
   const out: string[] = [];
   for (const dir of dirs) {
     if (!existsSync(dir)) continue;
-    const candidates = [dir, ...readdirSync(dir).map((c) => join(dir, c))];
+    let entries: string[] = [];
+    try {
+      // Only scan if dir is actually a directory
+      if (statSync(dir).isDirectory()) {
+        entries = readdirSync(dir).map((c) => join(dir, c));
+      }
+    } catch {
+      // Skip unreadable directories or non-directories; continue with next scanDir
+      continue;
+    }
+    const candidates = [dir, ...entries];
     for (const c of candidates) {
       const f = join(c, '.mcp.json');
       try {

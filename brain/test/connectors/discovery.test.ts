@@ -1,4 +1,5 @@
-import { readFileSync } from 'node:fs';
+import { readFileSync, writeFileSync, mkdtempSync, chmodSync, mkdirSync } from 'node:fs';
+import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { describe, expect, it } from 'vitest';
 import { discover, readSecretsFor, toServerConfig } from '../../src/connectors/discovery.js';
@@ -53,6 +54,36 @@ describe('discover', () => {
     const before = readFileSync(join(FX, 'claude.json'), 'utf8');
     run();
     expect(readFileSync(join(FX, 'claude.json'), 'utf8')).toBe(before);
+  });
+
+  it('tolerates a regular file in scanDirs and still discovers fixture servers', () => {
+    const tmp = mkdtempSync(join(tmpdir(), 'coco-disc-'));
+    const regularFile = join(tmp, 'somefile.txt');
+    writeFileSync(regularFile, 'not a directory');
+    const servers = discover({ claudeJsonPath: join(FX, 'claude.json'), scanDirs: [regularFile, FX], importedKeys: new Set() });
+    expect(servers.map((s) => s.name).sort()).toEqual(['atlassian', 'bifrost', 'isdb', 'kubectl-readonly', 'legacy', 'qmd']);
+  });
+
+  it('tolerates an unreadable directory in scanDirs and still discovers fixture servers', function () {
+    // Skip this test if running as root (can read 0o000 files)
+    if (process.getuid?.() === 0) {
+      this.skip();
+    }
+    const tmp = mkdtempSync(join(tmpdir(), 'coco-disc-'));
+    const unreadableDir = join(tmp, 'unreadable');
+    // Create a directory structure first with readable permissions
+    mkdirSync(unreadableDir, { recursive: true });
+    const innerDir = join(unreadableDir, 'inner');
+    mkdirSync(innerDir, { recursive: true });
+    writeFileSync(join(innerDir, 'dummy'), 'x');
+    // Now make the parent unreadable
+    try {
+      chmodSync(unreadableDir, 0o000);
+      const servers = discover({ claudeJsonPath: join(FX, 'claude.json'), scanDirs: [unreadableDir, FX], importedKeys: new Set() });
+      expect(servers.map((s) => s.name).sort()).toEqual(['atlassian', 'bifrost', 'isdb', 'kubectl-readonly', 'legacy', 'qmd']);
+    } finally {
+      chmodSync(unreadableDir, 0o755);
+    }
   });
 });
 
