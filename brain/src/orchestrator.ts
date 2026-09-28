@@ -58,7 +58,16 @@ export const TOOL_CONFIRM_TTL_MS = 120_000;
 /** I1: how long a spent/expired/superseded tool-confirm nudgeId is remembered, so a stale click on that
  * exact bubble gets an honest reply instead of falling through to a generic chat turn with no tool result. */
 const CONSUMED_TOOL_CONFIRM_TTL_MS = 10 * 60_000;
+/** N3: only a truly expired or replaced id gets this — a click that was actually acted on (run, denied,
+ * or superseded by clicking through) gets TOOL_CONFIRM_HANDLED_TEXT instead. */
 const TOOL_CONFIRM_EXPIRED_TEXT = 'That request expired — ask me again.';
+/** N3: a second click on a chip whose confirm was already run, failed, turned off, or cancelled. */
+const TOOL_CONFIRM_HANDLED_TEXT = 'That was already handled.';
+/** N2: a spoken/typed "yes" to a pending write confirm is not a click — only the button runs it. */
+const TOOL_CONFIRM_BUTTON_ONLY_TEXT = "Tap Run it to confirm — I only run that from the button.";
+/** N2: beyond offers.ts's general isAffirmation ("sure", "yes", "go ahead", "do it", …), a tool-confirm
+ * specifically also accepts "run it" and "confirm" — the chip's own label and the obvious synonym. */
+const TOOL_CONFIRM_AFFIRMATION = /^(?:run it|confirm)[.! ]*$/i;
 
 interface PendingNudge {
   id: string;
@@ -180,13 +189,15 @@ function hostOf(url: string): string | undefined {
   }
 }
 
-/** I3: the tool run (if any) this turn actually completed with `result.ok === true` — the last one, since
- * that's most relevant to what the user just asked. Feeds ChatContext.toolSucceeded, which lets the reply
- * honestly report a real result instead of being flattened by the unperformed-action honesty check. */
+/** I3/N1: the CONFIRMED tool run (if any) this turn actually completed with `result.ok === true` — the
+ * last one, since that's most relevant to what the user just asked. Feeds ChatContext.toolSucceeded, which
+ * lets the reply honestly report a real WRITE instead of being flattened by the unperformed-action honesty
+ * check. N1: never an `auto` run — a read-only lookup completed nothing a completion claim could refer to,
+ * so treating it as "success" here would switch the honesty check off on the most common tool turn. */
 function lastSuccessfulRun(runs: readonly ToolRun[]): { tool: string; serverId: string } | undefined {
   for (let i = runs.length - 1; i >= 0; i--) {
     const run = runs[i]!;
-    if (run.result.ok) return { tool: run.tool, serverId: run.serverId };
+    if (run.decision === 'confirmed' && run.result.ok) return { tool: run.tool, serverId: run.serverId };
   }
   return undefined;
 }
@@ -208,9 +219,10 @@ export class Orchestrator {
    * pending call lives only here, in the Brain — the chip message the Body echoes back carries only
    * nudgeId + choice text, never call data (see handleToolChip). */
   private pendingToolConfirm?: { nudgeId: string; call: PendingToolCall; text: string; source: Source; at: number };
-  /** I1: nudgeIds of tool confirms already resolved (run, denied, expired, or superseded by a newer ask),
-   * each remembered for CONSUMED_TOOL_CONFIRM_TTL_MS — see markToolConfirmConsumed/isToolConfirmConsumed. */
-  private readonly consumedToolConfirms = new Map<string, number>();
+  /** I1/N3: nudgeIds of tool confirms already resolved, each remembered for CONSUMED_TOOL_CONFIRM_TTL_MS —
+   * 'handled' for one a button click actually acted on (run, denied, or turned-off/failed), 'expired' for
+   * one that timed out or was replaced by a newer ask — see markToolConfirmConsumed/consumedToolConfirmReason. */
+  private readonly consumedToolConfirms = new Map<string, { at: number; reason: 'handled' | 'expired' }>();
   private recentTexts: ReadonlyMap<string, string> = new Map();
   private deciding = false;
   private mood: Mood | undefined;
@@ -340,8 +352,15 @@ export class Orchestrator {
   private async onUtterance(text: string, source: Source): Promise<void> {
     const now = this.d.clock();
     const turnId = this.trace.startTurn({ source, text });
-    // I2: any new utterance means the user has moved on from a still-armed write confirm — disarm it and
-    // audit the spoken cancel as 'denied', rather than leaving it runnable off a stale chip for up to 120s.
+    // N2: a pending write confirm runs ONLY from its own "Run it" chip — a spoken/typed "yes" (or "run it"/
+    // "confirm") must never be read as that click. Keep the confirm pending, say so, and never call the
+    // model on this turn (so no reply can imply the write happened when nothing ran).
+    if (this.pendingToolConfirm && this.isToolConfirmAffirmation(text)) {
+      this.sayTraced(TOOL_CONFIRM_BUTTON_ONLY_TEXT, 'reply', turnId, { speak: this.speakForReply(source) });
+      return;
+    }
+    // I2: any other new utterance means the user has moved on from a still-armed write confirm — disarm it
+    // and audit the spoken cancel as 'denied', rather than leaving it runnable off a stale chip for up to 120s.
     this.clearPendingToolConfirm('denied');
     this.resolveAll('engaged');
     const offer = this.takeOffer(now);
@@ -674,6 +693,9 @@ export class Orchestrator {
           return;
         }
         toolResults = gathered.toolContext || undefined;
+        // N1: gathered.runs are always auto (this.d.tools.gather never runs a confirm-mode tool itself), so
+        // lastSuccessfulRun is always undefined here — kept for symmetry with the post-confirm path below,
+        // and so this stays correct if gather's contract ever changes.
         toolSucceeded = lastSuccessfulRun(gathered.runs);
       } catch (err) {
         // M7: a class name only (never the error message, which could echo tool args/results) — diagnostics,
@@ -734,11 +756,23 @@ export class Orchestrator {
     }
   }
 
+  /** N2: whether `text` should be read as "yes, run the pending confirm" — offers.ts's general
+   * affirmations plus the chip's own label ("run it") and its obvious synonym ("confirm"). Never anything
+   * else: this is deliberately narrow, since a false positive here would run a write off a typed word
+   * instead of a button click. */
+  private isToolConfirmAffirmation(text: string): boolean {
+    return isAffirmation(text) || TOOL_CONFIRM_AFFIRMATION.test(text.trim());
+  }
+
   /** Asks the user to confirm a connector tool call that needs one, via a "Run it"/"Cancel" chip on a plain
    * say. The pending call is remembered only on `this` (never sent to the Body) — see pendingToolConfirm.
-   * M4: the ask line is saved as an assistant turn too, so the history reads as a real exchange even if the
-   * user never answers it (Cancel/expiry/replacement). M5: finishes this turn's trace, via sayTraced. */
+   * N4: defensively clears (and audits 'denied') any pending confirm this call is about to replace — today
+   * that never fires, since onUtterance's I2 clear always runs first, but it's cheap insurance against a
+   * future caller skipping that audit. M4: the ask line is saved as an assistant turn too, so the history
+   * reads as a real exchange even if the user never answers it (Cancel/expiry/replacement). M5: finishes
+   * this turn's trace, via sayTraced. */
   private askToolConfirm(call: PendingToolCall, text: string, source: Source, turnId = ''): void {
+    this.clearPendingToolConfirm('denied');
     const line = call.reason === 'untrusted_args'
       ? `That would run ${call.tool} with details taken from your screen — run it?`
       : `I'd need to run ${call.tool} (${call.serverId}) for that. Run it?`;
@@ -749,33 +783,37 @@ export class Orchestrator {
     this.pendingToolConfirm = { nudgeId, call, text, source, at: now };
   }
 
-  /** I1: remembers a tool-confirm nudgeId as spent (run, denied, expired, or superseded), pruning entries
-   * older than CONSUMED_TOOL_CONFIRM_TTL_MS on every call so the map stays small. */
-  private markToolConfirmConsumed(nudgeId: string): void {
+  /** I1/N3: remembers a tool-confirm nudgeId as spent, with why — 'handled' for one a button click actually
+   * acted on, 'expired' for one that timed out or was replaced — pruning entries older than
+   * CONSUMED_TOOL_CONFIRM_TTL_MS on every call so the map stays small. */
+  private markToolConfirmConsumed(nudgeId: string, reason: 'handled' | 'expired'): void {
     const now = this.d.clock();
-    this.consumedToolConfirms.set(nudgeId, now);
-    for (const [id, at] of this.consumedToolConfirms) {
-      if (now - at > CONSUMED_TOOL_CONFIRM_TTL_MS) this.consumedToolConfirms.delete(id);
+    this.consumedToolConfirms.set(nudgeId, { at: now, reason });
+    for (const [id, v] of this.consumedToolConfirms) {
+      if (now - v.at > CONSUMED_TOOL_CONFIRM_TTL_MS) this.consumedToolConfirms.delete(id);
     }
   }
 
-  private isToolConfirmConsumed(nudgeId: string): boolean {
-    const at = this.consumedToolConfirms.get(nudgeId);
-    if (at === undefined) return false;
-    if (this.d.clock() - at > CONSUMED_TOOL_CONFIRM_TTL_MS) {
+  /** Returns why `nudgeId` is spent, or undefined if it was never a tool confirm (or has aged out). */
+  private consumedToolConfirmReason(nudgeId: string): 'handled' | 'expired' | undefined {
+    const v = this.consumedToolConfirms.get(nudgeId);
+    if (!v) return undefined;
+    if (this.d.clock() - v.at > CONSUMED_TOOL_CONFIRM_TTL_MS) {
       this.consumedToolConfirms.delete(nudgeId);
-      return false;
+      return undefined;
     }
-    return true;
+    return v.reason;
   }
 
   /** I2/M1: clears any pending tool confirm, auditing `decision` and remembering its nudgeId as consumed —
-   * used both by a new utterance (I2, always 'denied') and by TTL expiry (M1, always 'expired'). */
+   * used both by a new utterance (I2, always 'denied') and by TTL expiry (M1, always 'expired'). N3: either
+   * way the DISPLAY reason is 'expired' — a superseded or timed-out confirm was never actually acted on by
+   * a button click, unlike the ones handleToolChip marks 'handled' below. */
   private clearPendingToolConfirm(decision: 'denied' | 'expired'): void {
     const p = this.pendingToolConfirm;
     if (!p) return;
     this.pendingToolConfirm = undefined;
-    this.markToolConfirmConsumed(p.nudgeId);
+    this.markToolConfirmConsumed(p.nudgeId, 'expired');
     this.d.tools?.recordDecision(p.call, decision);
   }
 
@@ -784,19 +822,24 @@ export class Orchestrator {
   private async handleToolChip(id: string, choice: string): Promise<boolean> {
     const p = this.pendingToolConfirm;
     if (!p || p.nudgeId !== id) {
-      // I1: a click on a bubble that already ran, was denied/expired, or was superseded by a newer ask.
-      if (!this.isToolConfirmConsumed(id)) return false;
-      this.say(TOOL_CONFIRM_EXPIRED_TEXT, 'reply', { speak: this.speakForReply('chat') });
+      // I1/N3: a click on a bubble that already ran/was denied ('handled'), or timed out/was superseded
+      // ('expired') — worded differently since only the first was actually acted on by a button click.
+      const reason = this.consumedToolConfirmReason(id);
+      if (!reason) return false;
+      this.say(reason === 'handled' ? TOOL_CONFIRM_HANDLED_TEXT : TOOL_CONFIRM_EXPIRED_TEXT, 'reply', { speak: this.speakForReply('chat') });
       return true;
     }
     this.pendingToolConfirm = undefined;
-    this.markToolConfirmConsumed(id);
     // M1: a late click that beat pulse() to it is still an expiry, audited and answered the same way.
     if (this.d.clock() - p.at > TOOL_CONFIRM_TTL_MS) {
+      this.markToolConfirmConsumed(id, 'expired');
       this.d.tools?.recordDecision(p.call, 'expired');
       this.say(TOOL_CONFIRM_EXPIRED_TEXT, 'reply', { speak: this.speakForReply(p.source) });
       return true;
     }
+    // Beyond this point the click is real and in-window — every branch below is a genuine "handled" outcome
+    // (run, failed, turned off, or cancelled), so a repeat click on this id gets TOOL_CONFIRM_HANDLED_TEXT.
+    this.markToolConfirmConsumed(id, 'handled');
     // M6: match every other chip comparison in this file (trimmed + lowercased). Anything other than "run
     // it" — including a mistyped choice or "shh" — denies; that is the safe default.
     if (choice.trim().toLowerCase() === TOOL_RUN_CHIP.toLowerCase() && this.d.tools) {

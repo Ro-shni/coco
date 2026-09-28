@@ -483,6 +483,18 @@ describe('ChatResponder', () => {
   });
 
   describe('toolSucceeded (task 8 fix round 1, I3)', () => {
+    it('N1 (fix round 2): a false send claim next to an auto (read-only) tool result still gets the honesty fallback, since toolSucceeded is never set for a lookup', async () => {
+      const gw = new ScriptedGateway((_, i) => (i === 0 ? "Per Jira, DEVOPS-1 is Done. I've messaged Prince." : "Per Jira, DEVOPS-1 is Done. I've messaged Prince."));
+      const reply = await make(gw).chat.reply('check DEVOPS-1 and tell Prince it is done', {
+        timeline: 't',
+        incidentMode: false,
+        // toolResults present (an auto getJiraIssue ran ok this turn) but toolSucceeded intentionally
+        // absent — the orchestrator never sets it from an auto/read run (N1).
+        toolResults: '<untrusted source="mcp:atlassian/getJiraIssue">\nok\nstatus: Done\n</untrusted>',
+      });
+      expect(reply.text).toBe(CANNOT_ACT_FALLBACK);
+    });
+
     it('keeps a reply that reports a successful tool result instead of the cannot-act fallback', async () => {
       const gw = new ScriptedGateway(() => "Per Jira, I've created the issue — DEVOPS-1.");
       const reply = await make(gw).chat.reply('create a jira issue for this bug', {

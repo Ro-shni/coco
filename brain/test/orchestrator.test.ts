@@ -1338,7 +1338,7 @@ describe('tools', () => {
     expect(s.says().at(-1)!.text).toBe('That request expired — ask me again.');
   });
 
-  it('I1: a double click on the same tool-confirm chip runs it once; the second click says it expired', async () => {
+  it('I1/N3: a double click on the same tool-confirm chip runs it once; the second click says it was already handled', async () => {
     const tools = fakeTools({ runs: [], pending: pendingCall, toolContext: '' });
     const s = setup({ tools });
     await s.o.handle(utter('create a jira issue'));
@@ -1347,7 +1347,30 @@ describe('tools', () => {
     expect(tools.runConfirmed).toHaveBeenCalledTimes(1);
     await s.o.handle(chip(ask.nudgeId, 'Run it'));
     expect(tools.runConfirmed).toHaveBeenCalledTimes(1); // still once
-    expect(s.says().at(-1)!.text).toBe('That request expired — ask me again.');
+    expect(s.says().at(-1)!.text).toBe('That was already handled.');
+  });
+
+  it('N3: a second click after Cancel says it was already handled, not expired', async () => {
+    const tools = fakeTools({ runs: [], pending: pendingCall, toolContext: '' });
+    const s = setup({ tools });
+    await s.o.handle(utter('create a jira issue'));
+    const ask = s.says().at(-1)!;
+    await s.o.handle(chip(ask.nudgeId, 'Cancel'));
+    await s.o.handle(chip(ask.nudgeId, 'Run it'));
+    expect(tools.runConfirmed).not.toHaveBeenCalled();
+    expect(s.says().at(-1)!.text).toBe('That was already handled.');
+  });
+
+  it('N3: a second click after a failed run (M2) says it was already handled', async () => {
+    const tools = fakeTools({ runs: [], pending: pendingCall, toolContext: '' });
+    tools.runConfirmed.mockRejectedValueOnce(new Error('boom'));
+    const s = setup({ tools });
+    await s.o.handle(utter('create a jira issue'));
+    const ask = s.says().at(-1)!;
+    await s.o.handle(chip(ask.nudgeId, 'Run it'));
+    await s.o.handle(chip(ask.nudgeId, 'Run it'));
+    expect(tools.runConfirmed).toHaveBeenCalledTimes(1);
+    expect(s.says().at(-1)!.text).toBe('That was already handled.');
   });
 
   it('I2: a new utterance clears a pending confirm (denied); the old chip then says it expired', async () => {
@@ -1413,6 +1436,66 @@ describe('tools', () => {
     await s.o.handle(chip(ask.nudgeId, 'Run it'));
     expect(s.reply).not.toHaveBeenCalled();
     expect(s.says().at(-1)!.text).toBe('createJiraIssue is turned off in Studio — nothing ran.');
+  });
+
+  it('N1: does not set toolSucceeded from an auto (non-confirmed) run, even one that succeeded', async () => {
+    const autoOkRun = { qualified: 'atlassian__getJiraIssue', serverId: 'atlassian', tool: 'getJiraIssue', args: {}, result: { ok: true, text: 'status: Done', ms: 5 }, decision: 'auto' as const };
+    const tools = fakeTools({ runs: [autoOkRun], toolContext: '<untrusted source="mcp:atlassian/getJiraIssue">\nok\nstatus: Done\n</untrusted>' });
+    const s = setup({ tools });
+    await s.o.handle(utter('check DEVOPS-1 and tell Prince it is done'));
+    const ctx = s.reply.mock.calls[0]![1];
+    expect(ctx.toolResults).toContain('status: Done'); // still surfaced for TOOL_RULE
+    expect(ctx.toolSucceeded).toBeUndefined(); // but never flips off the honesty check
+  });
+
+  it('N2: an affirmation while a confirm is pending keeps it armed, says the button-only line, and never calls the model', async () => {
+    const tools = fakeTools({ runs: [], pending: pendingCall, toolContext: '' });
+    const s = setup({ tools });
+    await s.o.handle(utter('create a jira issue for this bug'));
+    await s.o.handle(utter('yes'));
+    expect(tools.recordDecision).not.toHaveBeenCalled();
+    expect(s.reply).not.toHaveBeenCalled();
+    expect(s.says().at(-1)!.text).toBe('Tap Run it to confirm — I only run that from the button.');
+  });
+
+  it.each(['yes', 'run it', 'Run it.', 'confirm', 'go ahead', 'do it', 'sure', 'ok'])(
+    'N2: "%s" is read as an affirmation of the pending confirm, not a denial',
+    async (utterance) => {
+      const tools = fakeTools({ runs: [], pending: pendingCall, toolContext: '' });
+      const s = setup({ tools });
+      await s.o.handle(utter('create a jira issue for this bug'));
+      await s.o.handle(utter(utterance));
+      expect(tools.recordDecision).not.toHaveBeenCalled();
+      expect(s.says().at(-1)!.text).toBe('Tap Run it to confirm — I only run that from the button.');
+    },
+  );
+
+  it('N2: the chip still runs the pending confirm after an affirmation utterance', async () => {
+    const tools = fakeTools({ runs: [], pending: pendingCall, toolContext: '' });
+    const s = setup({ tools });
+    await s.o.handle(utter('create a jira issue for this bug'));
+    const ask = s.says().at(-1)!;
+    await s.o.handle(utter('yes'));
+    await s.o.handle(chip(ask.nudgeId, 'Run it'));
+    expect(tools.runConfirmed).toHaveBeenCalledWith(pendingCall);
+  });
+
+  it('N2: a non-affirmation utterance still clears and denies the pending confirm (I2 unchanged)', async () => {
+    const tools = fakeTools({ runs: [], pending: pendingCall, toolContext: '' });
+    const s = setup({ tools });
+    await s.o.handle(utter('create a jira issue for this bug'));
+    await s.o.handle(utter('actually never mind'));
+    expect(tools.recordDecision).toHaveBeenCalledWith(pendingCall, 'denied');
+  });
+
+  it('N4: askToolConfirm defensively clears (denied) a pending confirm it is about to replace', () => {
+    const tools = fakeTools({ runs: [], toolContext: '' });
+    const s = setup({ tools });
+    const oldCall = { qualified: 'atlassian__oldTool', serverId: 'atlassian', tool: 'oldTool', args: {}, reason: 'write_default' };
+    s.o['pendingToolConfirm'] = { nudgeId: 'old-id', call: oldCall, text: 'old text', source: 'chat', at: T0 };
+    s.o['askToolConfirm'](pendingCall, 'create a jira issue', 'chat', '');
+    expect(tools.recordDecision).toHaveBeenCalledWith(oldCall, 'denied');
+    expect(s.o['pendingToolConfirm']?.call).toEqual(pendingCall);
   });
 
   it('words the question differently when args came from the screen', async () => {
