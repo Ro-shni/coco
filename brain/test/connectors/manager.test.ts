@@ -26,7 +26,13 @@ class ScriptedTransport implements Transport {
   closed = false;
   onclose?: () => void;
   onerror?: (error: Error) => void;
-  onmessage?: (message: { jsonrpc: '2.0'; id?: number; method?: string; result?: unknown }) => void;
+  onmessage?: (message: {
+    jsonrpc: '2.0';
+    id?: number;
+    method?: string;
+    result?: unknown;
+    error?: { code: number; message: string };
+  }) => void;
 
   constructor(
     private readonly opts: {
@@ -36,6 +42,8 @@ class ScriptedTransport implements Transport {
       failCallSend?: Error;
       /** Delay the tools/call response by this many ms (simulates a response arriving after we gave up). */
       delayCallResponseMs?: number;
+      /** Respond to a tools/call with a JSON-RPC *error* response (a server-reported failure, not a dead transport). */
+      callErrorResponse?: { code: number; message: string };
     } = {},
   ) {}
 
@@ -60,7 +68,10 @@ class ScriptedTransport implements Transport {
       );
     } else if (message.method === 'tools/call') {
       if (this.opts.failCallSend) throw this.opts.failCallSend;
-      const respond = () => this.onmessage?.({ jsonrpc: '2.0', id: message.id, result: { content: [{ type: 'text', text: 'ok' }] } });
+      const respond = () =>
+        this.opts.callErrorResponse
+          ? this.onmessage?.({ jsonrpc: '2.0', id: message.id, error: this.opts.callErrorResponse })
+          : this.onmessage?.({ jsonrpc: '2.0', id: message.id, result: { content: [{ type: 'text', text: 'ok' }] } });
       const delay = this.opts.delayCallResponseMs ?? 0;
       if (delay > 0) setTimeout(respond, delay);
       else queueMicrotask(respond);
@@ -335,6 +346,43 @@ describe('ConnectorManager (scripted / fake transport)', () => {
     expect(again.state).toBe('error');
     advance(30_000);
     expect((await m.ensureConnected('fx')).state).toBe('connected'); // reconnect succeeds (ScriptedTransport is fresh each time)
+  });
+
+  it('N-6: a real Node `fetch failed` TypeError (errno nested in .cause) is treated as a connection error', async () => {
+    let transport: ScriptedTransport | undefined;
+    const factory: TransportFactory = async () => {
+      transport = new ScriptedTransport({
+        failCallSend: new TypeError('fetch failed', { cause: Object.assign(new Error('connect ECONNREFUSED'), { code: 'ECONNREFUSED' }) }),
+      });
+      return transport;
+    };
+    const { m } = await setup(fixtureCfg(), { transportFactory: factory });
+    expect((await m.ensureConnected('fx')).state).toBe('connected');
+
+    const r = await m.callTool('fx__thing', {});
+    expect(r.ok).toBe(false);
+    expect(transport?.closed).toBe(true); // the .cause walk found ECONNREFUSED and treated this as a dead connection
+    expect(m.statuses()[0]!.state).toBe('error');
+  });
+
+  it('N-4: a server-reported JSON-RPC error whose text says "fetch failed" is NOT a dead connection', async () => {
+    let transport: ScriptedTransport | undefined;
+    const factory: TransportFactory = async () => {
+      transport = new ScriptedTransport({ callErrorResponse: { code: -32603, message: 'fetch failed' } });
+      return transport;
+    };
+    const { m } = await setup(fixtureCfg(), { transportFactory: factory });
+    expect((await m.ensureConnected('fx')).state).toBe('connected');
+
+    // A proxy/aggregator MCP server can fail its own upstream call and reply with a JSON-RPC error whose message
+    // happens to say "fetch failed" or "connection closed" — that is the SDK wrapping it into an `McpError` whose
+    // `code` is the server's application code (-32603), not `ErrorCode.ConnectionClosed` (-32000). Our own
+    // transport/connection to that (otherwise healthy) server never actually failed.
+    const r = await m.callTool('fx__thing', {});
+    expect(r.ok).toBe(false);
+    expect(r.text).toMatch(/fetch failed/i);
+    expect(transport?.closed).toBe(false); // must NOT close a healthy client over a server-reported application error
+    expect(m.statuses()[0]!.state).toBe('connected'); // and must NOT back off a healthy connector because of it
   });
 
   it('I-5/M-1: back-off doubles up to a 10 min cap, then resets after a stable (>=60s) connection', async () => {

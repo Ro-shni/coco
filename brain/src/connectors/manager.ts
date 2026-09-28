@@ -3,6 +3,7 @@ import { getDefaultEnvironment, StdioClientTransport } from '@modelcontextprotoc
 import { StreamableHTTPClientTransport } from '@modelcontextprotocol/sdk/client/streamableHttp.js';
 import type { OAuthClientProvider } from '@modelcontextprotocol/sdk/client/auth.js';
 import type { Transport } from '@modelcontextprotocol/sdk/shared/transport.js';
+import { ErrorCode, McpError } from '@modelcontextprotocol/sdk/types.js';
 import type { Logger } from '../logger.js';
 import type { ConnectorRegistry } from './registry.js';
 import { secretKey, type SecretStore } from './secrets.js';
@@ -60,10 +61,17 @@ const CONNECTION_ERROR_TEXT = /fetch failed|connection closed/i;
  * a protocol-level hiccup (bad framing, a late/duplicate response, an unmatched progress token) that `onerror`
  * also reports but that leaves a perfectly usable connection behind. Walks the `.cause` chain because Node's
  * `fetch()` wraps a refused/reset socket in a top-level `TypeError: fetch failed`.
+ *
+ * N-4: an `McpError` is the SDK's wrapper for a server-sent JSON-RPC error response — a perfectly healthy server
+ * can reply with one whose message text happens to contain "fetch failed" or "connection closed" (e.g. a proxy
+ * MCP server reporting *its own* upstream failure). That is not our transport dying, so an `McpError` counts as a
+ * connection error only via the SDK's own dedicated marker, `ErrorCode.ConnectionClosed` — never by text-matching
+ * its message. The errno/text checks below apply only to errors the transport or `fetch()` itself throws.
  */
 function isConnectionError(err: unknown): boolean {
   let cur: unknown = err;
   for (let i = 0; i < 5 && cur instanceof Error; i++) {
+    if (cur instanceof McpError) return cur.code === ErrorCode.ConnectionClosed;
     const code = (cur as NodeJS.ErrnoException).code;
     if (code && CONNECTION_ERROR_CODES.has(code)) return true;
     if (CONNECTION_ERROR_TEXT.test(cur.message)) return true;
@@ -286,6 +294,10 @@ export class ConnectorManager {
       }
       return { ok: false, text: `unknown tool ${qualified}`, ms: this.deps.clock() - started };
     }
+    // N-5: capture the client that is actually making this call. `live.client` can change out from under us while
+    // we `await` (a disconnect + fresh reconnect can both complete before a stale call rejects) — closing whatever
+    // `live.client` happens to be *then* could close a brand-new, healthy client instead of the one that failed.
+    const client = live.client;
     const callTimeoutMs = this.deps.callTimeoutMs ?? DEFAULT_CALL_TIMEOUT_MS;
     // I-4: an AbortController tied to the call timeout, on top of the SDK's own {timeout}, so a timed-out call is actually
     // cancelled (the SDK sends notifications/cancelled) instead of just being ignored by us while it keeps running server-side.
@@ -293,7 +305,7 @@ export class ConnectorManager {
     const abortTimer = setTimeout(() => controller.abort(new Error(`tool call timed out after ${callTimeoutMs} ms`)), callTimeoutMs);
     try {
       const result = await withTimeout(
-        live.client.callTool({ name: tool.name, arguments: args }, undefined, { timeout: callTimeoutMs, signal: controller.signal }),
+        client.callTool({ name: tool.name, arguments: args }, undefined, { timeout: callTimeoutMs, signal: controller.signal }),
         callTimeoutMs,
         'tool call',
       );
@@ -301,9 +313,10 @@ export class ConnectorManager {
       return { ok: !isError, text: truncate(flattenContent(result)), ms: this.deps.clock() - started };
     } catch (err) {
       // M-7 (re-met per N-1's ruling): a genuine connection error — as opposed to a protocol-level onerror — closes
-      // the client. Its `onclose` then records the failure and applies back-off; we don't set state here directly.
-      if (isConnectionError(err) && live.client) {
-        await live.client.close().catch(() => undefined);
+      // the client that made *this* call (N-5), not whatever `live.client` happens to be by now. Its `onclose` then
+      // records the failure and applies back-off; we don't set state here directly.
+      if (isConnectionError(err)) {
+        await client.close().catch(() => undefined);
       }
       return { ok: false, text: truncate(`error: ${(err as Error).message}`), ms: this.deps.clock() - started };
     } finally {
