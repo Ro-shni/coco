@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { KeychainSecretStore, MemorySecretStore, secretKey, type SecurityRunner } from '../../src/connectors/secrets.js';
+import { KeychainSecretStore, MemorySecretStore, secretKey, runSecurity, type SecurityRunner } from '../../src/connectors/secrets.js';
 
 function recorder(result: { code: number; stdout: string } = { code: 0, stdout: '' }) {
   const calls: { args: string[]; stdin: string | undefined }[] = [];
@@ -35,8 +35,22 @@ describe('KeychainSecretStore', () => {
     await expect(s.set(secretKey('qmd', 'T'), 'a\nb')).rejects.toThrow();
   });
 
+  it('rejects values with control characters (including tab)', async () => {
+    const s = new KeychainSecretStore(recorder().run);
+    await expect(s.set(secretKey('qmd', 'T'), 'a\tb')).rejects.toThrow();
+    await expect(s.set(secretKey('qmd', 'T'), 'a\x00b')).rejects.toThrow();
+    await expect(s.set(secretKey('qmd', 'T'), 'a\x1fb')).rejects.toThrow();
+    await expect(s.set(secretKey('qmd', 'T'), 'a\x7fb')).rejects.toThrow(); // DEL
+  });
+
   it('ignores "not found" on delete', async () => {
     await expect(new KeychainSecretStore(recorder({ code: 44, stdout: '' }).run).delete(secretKey('qmd', 'T'))).resolves.toBeUndefined();
+  });
+
+  it('survives an early-exiting security process (runSecurity rejects, not throws)', async () => {
+    // Test that runSecurity handles EPIPE and other errors by rejecting the promise
+    // rather than throwing an unhandled error. Use a nonexistent executable path.
+    await expect(runSecurity(['-i'], 'test', '/nonexistent/security')).rejects.toThrow();
   });
 });
 
