@@ -1,0 +1,13 @@
+import { render, screen } from '@testing-library/react';
+import { describe, expect, it, vi } from 'vitest';
+import { Home } from '../src/tabs/Home';
+
+describe('Home tab', () => {
+  it('shows brain, model and connector health', async () => {
+    vi.stubGlobal('fetch', vi.fn(async () => new Response(JSON.stringify({ brain: 'ok', ollama: false, models: { main: 'qwen3.5:9b', vision: 'qwen3.5:9b' }, connectors: { total: 3, connected: 2, error: 1 } }))));
+    render(<Home />);
+    expect(await screen.findByText('qwen3.5:9b')).toBeTruthy();
+    expect(screen.getByText(/Ollama is not reachable/)).toBeTruthy();
+    expect(screen.getByText('2 of 3 connected · 1 need attention')).toBeTruthy();
+  });
+});
