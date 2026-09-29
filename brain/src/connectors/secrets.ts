@@ -80,6 +80,10 @@ export class KeychainSecretStore implements SecretStore {
 export class MemorySecretStore implements SecretStore {
   private readonly map = new Map<string, string>();
   async get(key: string) { checkKey(key); return this.map.get(key); }
-  async set(key: string, value: string) { checkKey(key); this.map.set(key, value); }
+  async set(key: string, value: string) {
+    checkKey(key);
+    if (/[\u0000-\u001f\u007f]/.test(value)) throw new Error('secret values must be single-line');
+    this.map.set(key, value);
+  }
   async delete(key: string) { checkKey(key); this.map.delete(key); }
 }

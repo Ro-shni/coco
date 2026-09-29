@@ -151,6 +151,8 @@ export async function handleApi(req: ApiRequest, deps: ApiDeps): Promise<ApiResp
       if (method === 'DELETE' && seg.length === 3) {
         await deps.manager.disconnect(cfg.id);
         for (const name of [...cfg.envSecrets, ...cfg.headerSecrets]) await deps.secrets.delete(secretKey(cfg.id, name));
+        // OAuth tokens/client must go too: a later connector reusing this id must never get this server's token.
+        for (const name of ['oauth_tokens', 'oauth_client']) await deps.secrets.delete(secretKey(cfg.id, name));
         deps.registry.remove(cfg.id);
         return ok({ ok: true });
       }
@@ -207,6 +209,14 @@ export async function handleApi(req: ApiRequest, deps: ApiDeps): Promise<ApiResp
       if (!body.success) return err(400, 'confirm:true is required');
       const entry = loadCatalog().find((e) => e.id === seg[2]);
       if (!entry) return err(404, 'not found');
+      // Only the credential names this entry declares may be stored (never e.g. oauth_tokens).
+      const allowedEnv = new Set(entry.envNames ?? []);
+      const allowedHeaders = new Set(entry.headerNames ?? []);
+      const badName = [
+        ...Object.keys(body.data.env ?? {}).filter((n) => !allowedEnv.has(n)),
+        ...Object.keys(body.data.headers ?? {}).filter((n) => !allowedHeaders.has(n)),
+      ];
+      if (badName.length > 0) return err(400, `${entry.name} doesn't use: ${badName.join(', ')}`);
       let cfg: ServerConfig;
       try {
         cfg = catalogToConfig(entry, new Set(deps.registry.list().map((s) => s.id)), body.data);

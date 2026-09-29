@@ -167,7 +167,7 @@ async function main(): Promise<void> {
       },
     });
   } catch (err: unknown) {
-    log.warn('oauth_callback_unavailable', { error: err instanceof Error ? err.message : String(err) });
+    log.warn('oauth_callback_unavailable', { error: (err as NodeJS.ErrnoException)?.code ?? (err instanceof Error && /in use/.test(err.message) ? 'EADDRINUSE' : 'Error') });
   }
 
   void manager.connectAll();

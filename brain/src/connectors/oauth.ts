@@ -2,6 +2,7 @@ import { randomBytes } from 'node:crypto';
 import { auth as sdkAuth, type OAuthClientProvider } from '@modelcontextprotocol/sdk/client/auth.js';
 import type { OAuthClientInformationMixed, OAuthClientMetadata, OAuthTokens } from '@modelcontextprotocol/sdk/shared/auth.js';
 import type { Logger } from '../logger.js';
+import { assertSafeAuthUrl, safeFetch } from './safeFetch.js';
 import { secretKey, type SecretStore } from './secrets.js';
 import type { ServerConfig } from './types.js';
 
@@ -80,6 +81,7 @@ export class OAuthFlows {
       tokens: async () => getJson<OAuthTokens>('oauth_tokens'),
       saveTokens: async (t) => secrets.set(secretKey(cfg.id, 'oauth_tokens'), JSON.stringify(t)),
       redirectToAuthorization: async (url) => {
+        assertSafeAuthUrl(url); // server-supplied: never link Studio to http/file/custom-scheme or prod pages
         const a = flows.latest(cfg.id);
         if (a) a.url = url.toString();
       },
@@ -103,6 +105,15 @@ export class OAuthFlows {
     return provider;
   }
 
+  /** Deletes a server's stored OAuth tokens and client registration (connector removed), so a later connector
+   * reusing the same id can never send the old server's token to a new URL. */
+  async forgetServer(serverId: string): Promise<void> {
+    await this.deps.secrets.delete(secretKey(serverId, 'oauth_tokens'));
+    await this.deps.secrets.delete(secretKey(serverId, 'oauth_client'));
+    for (const [state, a] of this.byState) if (a.serverId === serverId) this.byState.delete(state);
+    this.completing.delete(serverId);
+  }
+
   /** Handles a GET to `/oauth/callback`. Every branch returns a small HTML page for the browser tab; the caller
    * (Task 11's `main`) also reconnects `serverId` when it is present, since a successful sign-in means the
    * connector can now finish `ensureConnected`. */
@@ -118,7 +129,7 @@ export class OAuthFlows {
     if (!code) return { status: 400, html: page('Sign-in failed', 'No authorization code was returned.') };
     this.completing.set(attempt.serverId, attempt);
     try {
-      await (this.deps.authFn ?? sdkAuth)(attempt.provider, { serverUrl: attempt.cfg.url!, authorizationCode: code });
+      await (this.deps.authFn ?? sdkAuth)(attempt.provider, { serverUrl: attempt.cfg.url!, authorizationCode: code, ...(this.deps.authFn ? {} : { fetchFn: safeFetch() }) });
     } catch (err) {
       const e = err as { name?: string; code?: string };
       this.deps.log?.warn('oauth_exchange_failed', { id: attempt.serverId, error: e.code ?? e.name ?? 'Error' });

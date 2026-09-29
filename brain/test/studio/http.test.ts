@@ -44,7 +44,6 @@ function fakeApi(): ApiDeps {
 async function boot(opts: {
   sessions?: MemorySessionStore;
   onMessage?: (m: unknown) => void;
-  oauthCallback?: (q: URLSearchParams) => Promise<{ status: number; html: string }>;
 } = {}) {
   const staticDir = mkdtempSync(join(tmpdir(), 'coco-static-'));
   writeFileSync(join(staticDir, 'index.html'), '<!doctype html><title>Coco Studio</title>');
@@ -53,7 +52,6 @@ async function boot(opts: {
   const sessions = opts.sessions ?? new MemorySessionStore();
   const handler = createStudioHandler({
     token: TOKEN, staticDir, api: fakeApi(), log: silentLogger, sessions,
-    ...(opts.oauthCallback ? { oauthCallback: opts.oauthCallback } : {}),
   });
   server = await startServer({ token: TOKEN, onMessage: opts.onMessage ?? (() => undefined), log: silentLogger, onHttp: handler });
   return { base: `http://127.0.0.1:${server.port}`, port: server.port, sessions };
@@ -262,16 +260,6 @@ describe('Studio over HTTP', () => {
     });
   });
 
-  describe('/oauth/callback (I5)', () => {
-    it('runs the Host check before dispatching, and needs no token', async () => {
-      const { base, port } = await boot({ oauthCallback: async () => ({ status: 200, html: '<p>ok</p>' }) });
-      const foreign = await rawRequest(port, '/oauth/callback?code=x', { headers: { host: `evil.test:${port}` } });
-      expect(foreign.status).toBe(403);
-      const res = await fetch(`${base}/oauth/callback?code=x`); // no Authorization header at all
-      expect(res.status).toBe(200);
-      expect(await res.text()).toContain('ok');
-    });
-  });
 
   describe('Body WebSocket alongside the Studio handler (I4)', () => {
     it('a correctly-authenticated Body connection still opens and exchanges messages', async () => {

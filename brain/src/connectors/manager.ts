@@ -5,6 +5,7 @@ import { UnauthorizedError, type OAuthClientProvider } from '@modelcontextprotoc
 import type { Transport } from '@modelcontextprotocol/sdk/shared/transport.js';
 import { McpError } from '@modelcontextprotocol/sdk/types.js';
 import type { Logger } from '../logger.js';
+import { safeFetch } from './safeFetch.js';
 import type { ConnectorRegistry } from './registry.js';
 import { secretKey, type SecretStore } from './secrets.js';
 import { qualify, type ServerConfig, type ServerState, type ServerStatus, type ToolInfo } from './types.js';
@@ -187,6 +188,7 @@ export class ConnectorManager {
     }
     return new StreamableHTTPClientTransport(new URL(cfg.url!), {
       requestInit: { headers: secrets.headers },
+      fetch: safeFetch(),
       ...(cfg.auth === 'oauth' && this.oauthProviderFor ? { authProvider: this.oauthProviderFor(cfg) } : {}),
     });
   };

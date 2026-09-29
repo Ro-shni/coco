@@ -112,7 +112,6 @@ function launchPage(nonce: string | undefined, cspNonce: string): string {
 
 export function createStudioHandler(opts: {
   token: string; staticDir: string; api: ApiDeps; log: Logger; sessions: SessionStore;
-  oauthCallback?: (query: URLSearchParams) => Promise<{ status: number; html: string }>;
 }): (req: IncomingMessage, res: ServerResponse, port: number) => void {
   const root = existsSync(opts.staticDir) ? realpathSync(opts.staticDir) : resolve(opts.staticDir);
   const isPrimaryToken = (t: string) => safeEq(t, opts.token);
@@ -123,15 +122,6 @@ export function createStudioHandler(opts: {
       const url = new URL(req.url ?? '/', `http://127.0.0.1:${port}`);
       const path = url.pathname;
       try {
-        // I5: the OAuth redirect always carries a correct Host; nothing else should be able to reach this
-        // (and its future state-handling) under a DNS-rebound Host.
-        if (path === '/oauth/callback' && opts.oauthCallback) {
-          const hostCheck = checkHost(req.headers, port);
-          if (!hostCheck.ok) return sendJson(res, hostCheck.status, { error: hostCheck.reason });
-          const r = await opts.oauthCallback(url.searchParams);
-          return send(res, r.status, r.html, TYPES['.html']!);
-        }
-
         // Body-only: mints a one-time launch nonce. Requires the permanent Studio token specifically —
         // a session token (scoped to one already-open Studio tab) must never be able to mint fresh launch links.
         if (path === '/api/launch-nonce' && req.method === 'POST') {

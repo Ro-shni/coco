@@ -152,3 +152,25 @@ describe('OAuthFlows fix round 1', () => {
     expect(s.logged).toEqual([{ event: 'oauth_exchange_failed', data: { id: 'atlassian', error: 'InvalidGrantError' } }]);
   });
 });
+
+describe('OAuthFlows security', () => {
+  it('refuses a non-https or production-host authorization URL', async () => {
+    const flows = new OAuthFlows({ secrets: new MemorySecretStore(), redirectUrl: () => 'http://127.0.0.1:47823/oauth/callback', newState: () => 's1', clock: () => 0 });
+    const p = flows.providerFor(cfg());
+    await p.state!();
+    await expect(p.redirectToAuthorization(new URL('http://phish.example/login'))).rejects.toThrow();
+    await expect(p.redirectToAuthorization(new URL('https://x.prd.meesho.int/authorize'))).rejects.toThrow();
+    expect(flows.pendingUrl('atlassian')).toBeUndefined();
+  });
+
+  it('forgetServer removes stored OAuth tokens and client', async () => {
+    const secrets = new MemorySecretStore();
+    const flows = new OAuthFlows({ secrets, redirectUrl: () => 'http://127.0.0.1:47823/oauth/callback', clock: () => 0 });
+    const p = flows.providerFor(cfg());
+    await p.saveTokens({ access_token: 'at', token_type: 'Bearer' });
+    await p.saveClientInformation!({ client_id: 'c' });
+    await flows.forgetServer('atlassian');
+    expect(await secrets.get(secretKey('atlassian', 'oauth_tokens'))).toBeUndefined();
+    expect(await secrets.get(secretKey('atlassian', 'oauth_client'))).toBeUndefined();
+  });
+});

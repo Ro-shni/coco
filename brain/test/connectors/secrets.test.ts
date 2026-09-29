@@ -63,3 +63,9 @@ describe('MemorySecretStore', () => {
     expect(await m.get(secretKey('a', 'B'))).toBeUndefined();
   });
 });
+
+describe('MemorySecretStore value check', () => {
+  it('rejects control characters like the Keychain store', async () => {
+    await expect(new MemorySecretStore().set(secretKey('a', 'B'), 'x\ny')).rejects.toThrow();
+  });
+});

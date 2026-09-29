@@ -285,3 +285,22 @@ describe('connector auth route', () => {
     expect(res.json).toEqual({ state: 'needs_auth', authorizationUrl: 'https://auth.atlassian.com/authorize?state=1' });
   });
 });
+
+describe('final security fixes', () => {
+  it('deleting a connector also forgets its OAuth tokens and client', async () => {
+    const s = setup();
+    await s.call('POST', '/api/catalog/atlassian/add', { confirm: true });
+    await s.secrets.set(secretKey('atlassian', 'oauth_tokens'), '{"access_token":"at"}');
+    await s.secrets.set(secretKey('atlassian', 'oauth_client'), '{"client_id":"c"}');
+    expect((await s.call('DELETE', '/api/connectors/atlassian')).status).toBe(200);
+    expect(await s.secrets.get(secretKey('atlassian', 'oauth_tokens'))).toBeUndefined();
+    expect(await s.secrets.get(secretKey('atlassian', 'oauth_client'))).toBeUndefined();
+  });
+
+  it('catalog add rejects credential names the entry does not declare', async () => {
+    const s = setup();
+    const r = await s.call('POST', '/api/catalog/github/add', { confirm: true, headers: { Authorization: 'Bearer x', oauth_tokens: '{"access_token":"evil"}' } });
+    expect(r.status).toBe(400);
+    expect(await s.secrets.get(secretKey('github', 'oauth_tokens'))).toBeUndefined();
+  });
+});
