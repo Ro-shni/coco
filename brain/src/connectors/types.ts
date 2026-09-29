@@ -20,5 +20,5 @@ export type ServerConfig = z.infer<typeof ServerConfig>;
 export type AutonomyMode = 'auto' | 'confirm' | 'off';
 export type ServerState = 'disconnected' | 'connecting' | 'connected' | 'needs_auth' | 'error' | 'disabled';
 export interface ServerStatus { id: string; state: ServerState; error?: string; toolCount: number; since: number }
-export interface ToolInfo { serverId: string; name: string; qualified: string; description: string; inputSchema: Record<string, unknown> }
+export interface ToolInfo { serverId: string; name: string; qualified: string; description: string; inputSchema: Record<string, unknown>; autoArgNames?: string[] }
 export const qualify = (serverId: string, tool: string): string => `${serverId}__${tool}`;

@@ -524,3 +524,17 @@ describe('ConnectorManager (scripted / fake transport)', () => {
     expect(calls).toBe(expectedCalls + 1); // retried at the 30s mark: proves the back-off was reset, not still capped
   });
 });
+
+describe('ConnectorManager auto-filled arguments (Atlassian cloudId)', () => {
+  const ATL = join(import.meta.dirname, '..', 'fixtures', 'mcp-atlassian-fixture.mjs');
+  it('resolves cloudId once, hides it from the model-facing schema, and fills it on calls', async () => {
+    const { m } = await setup(fixtureCfg({ id: 'atl', args: [ATL], envSecrets: [] }));
+    await m.ensureConnected('atl');
+    const search = m.tools().find((t) => t.name === 'searchConfluenceUsingCql')!;
+    const props = (search.inputSchema as { properties?: Record<string, unknown>; required?: string[] });
+    expect(Object.keys(props.properties ?? {})).toEqual(['cql']);
+    expect(props.required ?? []).not.toContain('cloudId');
+    const r = await m.callTool('atl__searchConfluenceUsingCql', { cql: 'title ~ "Wordle"' });
+    expect(r).toMatchObject({ ok: true, text: 'searched cloud-123 for title ~ "Wordle"' });
+  });
+});

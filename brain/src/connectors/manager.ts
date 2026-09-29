@@ -35,6 +35,8 @@ interface Live {
   retryAt: number;
   backoffMs: number;
   connecting?: Promise<void>;
+  /** Arguments Coco fills in itself (e.g. Atlassian's cloudId), hidden from the model-facing tool schemas. */
+  autoArgs?: Record<string, string>;
   /** I-2: bumped on every explicit disconnect so a connect attempt in flight at the time can tell it has been superseded. */
   epoch: number;
   /** I-2/I-4: aborts the in-flight connect's SDK requests so `disconnect` does not have to wait out the connect budget. */
@@ -90,6 +92,32 @@ function withTimeout<T>(p: Promise<T>, ms: number, what: string): Promise<T> {
     const t = setTimeout(() => reject(new Error(`${what} timed out after ${ms} ms`)), ms);
     p.then((v) => { clearTimeout(t); resolve(v); }, (e) => { clearTimeout(t); reject(e); });
   });
+}
+
+/** Tools that name the account/site every other tool needs, and which result field holds it. */
+const AUTO_ARG_SOURCES: { tool: string; arg: string; pick: (parsed: unknown) => string | undefined }[] = [
+  {
+    // Atlassian's remote MCP: every Jira/Confluence tool takes the site's cloudId.
+    tool: 'getAccessibleAtlassianResources',
+    arg: 'cloudId',
+    pick: (parsed) => (Array.isArray(parsed) && typeof parsed[0]?.id === 'string' ? (parsed[0].id as string) : undefined),
+  },
+];
+
+/** Removes auto-filled properties from a JSON Schema object so the model never has to supply them. */
+function hideArgs(schema: Record<string, unknown>, names: string[]): Record<string, unknown> {
+  const props = (schema.properties ?? {}) as Record<string, unknown>;
+  const required = Array.isArray(schema.required) ? (schema.required as string[]) : undefined;
+  return {
+    ...schema,
+    properties: Object.fromEntries(Object.entries(props).filter(([k]) => !names.includes(k))),
+    ...(required ? { required: required.filter((r) => !names.includes(r)) } : {}),
+  };
+}
+
+function withAutoArgs(args: Record<string, unknown>, auto: Record<string, string> | undefined, names: string[] | undefined): Record<string, unknown> {
+  if (!auto || !names?.length) return args;
+  return { ...args, ...Object.fromEntries(names.filter((n) => auto[n] !== undefined).map((n) => [n, auto[n]])) };
 }
 
 export class ConnectorManager {
@@ -253,6 +281,7 @@ export class ConnectorManager {
         description: (t.description ?? '').slice(0, 500),
         inputSchema: (t.inputSchema ?? { type: 'object' }) as Record<string, unknown>,
       }));
+      await this.resolveAutoArgs(e, client, epoch);
       this.deps.log.info('connector_connected', {
         id: cfg.id,
         tools: e.tools.length,
@@ -291,6 +320,30 @@ export class ConnectorManager {
     }
   }
 
+  /** Best-effort: looks up values like Atlassian's cloudId once per connection, fills them on every call, and
+   * hides them from the schemas the model sees (a 9B model reliably forgets them). */
+  private async resolveAutoArgs(e: Live, client: Client, epoch: number): Promise<void> {
+    e.autoArgs = undefined;
+    for (const src of AUTO_ARG_SOURCES) {
+      if (!e.tools.some((t) => t.name === src.tool)) continue;
+      try {
+        const result = await withTimeout(client.callTool({ name: src.tool, arguments: {} }, undefined, { timeout: 10_000 }), 10_000, 'auto-arg lookup');
+        if (e.epoch !== epoch) return;
+        const value = src.pick(JSON.parse(flattenContent(result)));
+        if (!value) continue;
+        e.autoArgs = { ...(e.autoArgs ?? {}), [src.arg]: value };
+        e.tools = e.tools.map((t) => {
+          const props = (t.inputSchema.properties ?? {}) as Record<string, unknown>;
+          return src.arg in props
+            ? { ...t, inputSchema: hideArgs(t.inputSchema, [src.arg]), autoArgNames: [...(t.autoArgNames ?? []), src.arg] }
+            : t;
+        });
+      } catch {
+        this.deps.log.warn('connector_auto_arg_failed', { tool: src.tool });
+      }
+    }
+  }
+
   async callTool(qualified: string, args: Record<string, unknown>): Promise<ToolResult> {
     const started = this.deps.clock();
     const sep = qualified.indexOf('__');
@@ -318,7 +371,7 @@ export class ConnectorManager {
     const abortTimer = setTimeout(() => controller.abort(new Error(`tool call timed out after ${callTimeoutMs} ms`)), callTimeoutMs);
     try {
       const result = await withTimeout(
-        client.callTool({ name: tool.name, arguments: args }, undefined, { timeout: callTimeoutMs, signal: controller.signal }),
+        client.callTool({ name: tool.name, arguments: withAutoArgs(args, live.autoArgs, tool.autoArgNames) }, undefined, { timeout: callTimeoutMs, signal: controller.signal }),
         callTimeoutMs,
         'tool call',
       );
