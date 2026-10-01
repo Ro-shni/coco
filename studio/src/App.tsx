@@ -32,7 +32,8 @@ export function App() {
       <main>
         {route.page === 'activity' ? <Activity />
           : route.page === 'home' ? <Home />
-          : <Connectors />}
+          : route.page === 'connector' ? <Connectors data={data} id={route.id} />
+          : <Connectors data={data} />}
       </main>
     </div>
   );
