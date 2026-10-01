@@ -6,7 +6,7 @@ import { useConnectors } from './hooks/useConnectors';
 import { useRoute } from './hooks/useRoute';
 import { Activity } from './tabs/Activity';
 import { Connectors } from './tabs/Connectors';
-import { Home } from './tabs/Home';
+import { Home, type AddTab } from './tabs/Home';
 import { Terminal } from './tabs/Terminal';
 import { Playground } from './tabs/Playground';
 
@@ -18,7 +18,7 @@ export function App() {
   const route = useRoute();
   const [expired, setExpired] = useState(() => !hasSession());
   const data = useConnectors();
-  const [adding, setAdding] = useState(false);
+  const [adding, setAdding] = useState<AddTab | false>(false);
 
   useEffect(() => onSessionExpired(() => setExpired(true)), []);
 
@@ -32,17 +32,18 @@ export function App() {
 
   return (
     <div className="app">
-      <Sidebar route={route} connectors={data.connectors} onAdd={() => setAdding(true)} />
+      <Sidebar route={route} connectors={data.connectors} onAdd={() => setAdding('catalog')} />
       <main>
         {route.page === 'activity' ? <Activity />
-          : route.page === 'home' ? <Home />
+          : route.page === 'home' ? <Home onAdd={setAdding} />
           : route.page === 'playground' ? <Playground />
           : route.page === 'terminal' ? <Terminal />
           : route.page === 'connector' ? <Connectors data={data} id={route.id} />
-          : <Connectors data={data} onAdd={() => setAdding(true)} />}
+          : <Connectors data={data} onAdd={() => setAdding('catalog')} />}
       </main>
       {adding && (
         <AddConnectorModal
+          initialTab={adding}
           onClose={() => setAdding(false)}
           onAdded={(id) => { setAdding(false); void data.reload(); if (id) location.hash = `connectors/${encodeURIComponent(id)}`; }}
         />

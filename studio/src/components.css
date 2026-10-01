@@ -120,3 +120,14 @@ th { font-weight: 650; color: var(--muted); }
 .custom-connector { display: grid; gap: var(--s1); }
 .custom-connector .credentials { display: grid; gap: var(--s1); }
 .custom-connector input, .custom-connector select { flex: 1; min-width: 140px; }
+
+/* Home + Activity */
+.status-cards { grid-template-columns: repeat(auto-fill, minmax(220px, 1fr)); }
+.status-card { display: grid; gap: 4px; }
+.status-value { font-size: var(--t-body); font-weight: 650; display: flex; gap: 8px; align-items: baseline; }
+.status-value .dot { transform: translateY(1px); }
+.checklist { list-style: none; margin: 0; padding: 0; display: grid; gap: var(--s1); }
+.checklist li { display: flex; align-items: center; gap: var(--s2); flex-wrap: wrap; }
+.checklist button, .checklist .btn { min-width: 200px; justify-content: center; }
+.table-card { padding: 0; overflow-x: auto; }
+.table-card tr:last-child td { border-bottom: 0; }

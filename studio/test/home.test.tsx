@@ -19,3 +19,13 @@ describe('Home tab', () => {
     expect(screen.queryByText('Loading…')).toBeNull();
   });
 });
+
+describe('Home getting started', () => {
+  it('shows a checklist only when there are no connectors', async () => {
+    vi.stubGlobal('fetch', vi.fn(async () => new Response(JSON.stringify({ brain: 'ok', ollama: true, models: { main: 'm', vision: 'm' }, connectors: { total: 0, connected: 0, error: 0 } }))));
+    render(<Home />);
+    expect(await screen.findByText('Getting started')).toBeTruthy();
+    expect(screen.getByRole('button', { name: 'Import from this Mac' })).toBeTruthy();
+    expect(screen.getByRole('link', { name: 'Try the Playground' })).toBeTruthy();
+  });
+});

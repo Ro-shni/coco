@@ -1,4 +1,5 @@
 import { render, screen, waitFor } from '@testing-library/react';
+import userEvent from '@testing-library/user-event';
 import { describe, expect, it, vi } from 'vitest';
 import { Activity } from '../src/tabs/Activity';
 
@@ -17,5 +18,26 @@ describe('Activity tab', () => {
     expect(rows[1]!.textContent).toContain('createJiraIssue');
     expect(rows[1]!.textContent).toContain('denied');
     expect(rows[2]!.textContent).toContain('120 ms');
+  });
+});
+
+describe('Activity filters and empty state', () => {
+  const rows = [
+    { id: 2, ts: Date.now() - 2 * 60_000, serverId: 'atlassian', tool: 'createJiraIssue', decision: 'denied', ok: null, ms: null, resultChars: null },
+    { id: 1, ts: Date.now() - 3 * 3600_000, serverId: 'slack', tool: 'post', decision: 'auto', ok: true, ms: 120, resultChars: 900 },
+  ];
+  it('shows relative times and filters by connector', async () => {
+    vi.stubGlobal('fetch', vi.fn(async () => new Response(JSON.stringify(rows))));
+    render(<Activity />);
+    expect(await screen.findByText('2 min ago')).toBeTruthy();
+    expect(screen.getByText('3 hours ago')).toBeTruthy();
+    await userEvent.selectOptions(screen.getByLabelText('Filter by connector'), 'slack');
+    expect(screen.queryByText('createJiraIssue')).toBeNull();
+    expect(screen.getByText('post')).toBeTruthy();
+  });
+  it('shows an empty state with no rows', async () => {
+    vi.stubGlobal('fetch', vi.fn(async () => new Response(JSON.stringify([]))));
+    render(<Activity />);
+    expect(await screen.findByText('Nothing has run yet')).toBeTruthy();
   });
 });
