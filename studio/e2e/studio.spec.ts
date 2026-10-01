@@ -28,21 +28,30 @@ async function launch(request: APIRequestContext, page: Page): Promise<void> {
 
 test('launch → import the discovered fixture server → it connects and a tool test works', async ({ page, request }) => {
   await launch(request, page);
-  await page.getByRole('link', { name: 'Connectors' }).click();
+  await page.getByRole('button', { name: '+ Add connector' }).click();
+  await page.getByRole('tab', { name: 'Found on this Mac' }).click();
   await page.getByTestId('discovered-fixture').getByRole('button', { name: 'Import' }).click();
-  await expect(page.getByRole('dialog')).toContainText('mcp-server.mjs');
+  await expect(page.getByRole('dialog', { name: 'Import fixture' })).toContainText('mcp-server.mjs');
   await page.getByRole('button', { name: 'Run this server' }).click();
-  const card = page.getByTestId('connector-fixture');
-  // The manager connects in the background; reload until the tools appear.
+  // Importing opens the new connector's page; the manager connects in the background, so reload until the tools appear.
+  await expect(page.getByTestId('connector-fixture')).toBeVisible();
+  const echo = page.getByTestId('tool-echo');
   await expect(async () => {
     await page.reload();
-    await expect(card.getByText('echo', { exact: true })).toBeVisible({ timeout: 1000 });
+    await expect(echo).toBeVisible({ timeout: 1000 });
   }).toPass({ timeout: 15_000 });
-  const echo = card.locator('li.tool', { hasText: 'Echo text back' });
-  await echo.getByRole('button', { name: 'Test' }).click();
-  await echo.getByLabel('Arguments for echo').fill('{"text":"hi"}');
-  await echo.getByRole('button', { name: 'Run test' }).click();
+  await echo.getByRole('button', { name: /Try it/ }).click();
+  await echo.getByLabel(/^text/).fill('hi');
+  await echo.getByRole('button', { name: 'Run', exact: true }).click();
   await expect(echo.locator('pre.result')).toContainText('echo:hi');
+});
+
+test('Terminal and Playground pages render', async ({ request, page }) => {
+  await launch(request, page);
+  await page.getByRole('link', { name: 'Terminal' }).click();
+  await expect(page.getByText(/sudo, disk wipes and production hosts are always blocked/)).toBeVisible();
+  await page.getByRole('navigation', { name: 'Studio' }).getByRole('link', { name: 'Playground' }).click();
+  await expect(page.getByPlaceholder('Ask what Coco would look up…')).toBeVisible();
 });
 
 test('Activity lists the audited test run', async ({ page, request }) => {
