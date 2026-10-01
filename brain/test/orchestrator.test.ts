@@ -1523,3 +1523,16 @@ describe('tools', () => {
   });
 });
 
+
+describe('terminal confirmations', () => {
+  const utter = (text: string) => ({ v: 1 as const, type: 'utterance' as const, text, source: 'chat' as const });
+  it('shows the exact command on the Run it question', async () => {
+    const call = { qualified: 'coco__shell_run', serverId: 'coco', tool: 'shell_run', args: { command: 'git push' }, reason: 'may change things' };
+    const tools = { gather: vi.fn().mockResolvedValue({ runs: [], pending: call, toolContext: '' }), runConfirmed: vi.fn(), recordDecision: vi.fn() };
+    const s = setup({ tools });
+    await s.o.handle(utter('push my branch in the terminal'));
+    const ask = s.says().at(-1)!;
+    expect(ask.text).toBe('Run this in Terminal?\n$ git push');
+    expect(ask.chips).toEqual(['Run it', 'Cancel']);
+  });
+});

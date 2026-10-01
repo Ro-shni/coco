@@ -48,7 +48,7 @@ function setup(
 describe('ToolLoop.gather', () => {
   it('skips the model entirely when no tool is relevant', async () => {
     const s = setup([]);
-    expect(await s.loop.gather({ utterance: 'lol ok', untrustedText: '' })).toEqual({ runs: [], toolContext: '' });
+    expect(await s.loop.gather({ utterance: 'lol ok', untrustedText: '' })).toEqual({ runs: [], toolContext: '', offered: [] });
     expect(s.chatWithTools).not.toHaveBeenCalled();
   });
 

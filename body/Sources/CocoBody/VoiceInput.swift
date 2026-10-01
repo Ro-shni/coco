@@ -57,6 +57,7 @@ final class VoiceInput {
 
         let request = SFSpeechAudioBufferRecognitionRequest()
         request.requiresOnDeviceRecognition = true  // privacy: never send audio off-device
+        request.contextualStrings = VoiceVocabulary.terms  // e.g. "Claude" was being heard as "clot"
         request.shouldReportPartialResults = true
         request.addsPunctuation = true
 

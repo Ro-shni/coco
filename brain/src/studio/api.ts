@@ -8,7 +8,8 @@ import { discover, readSecretsFor, toServerConfig } from '../connectors/discover
 import type { ConnectorManager } from '../connectors/manager.js';
 import { DeniedHostError, uniqueId, type ConnectorRegistry } from '../connectors/registry.js';
 import { secretKey, type SecretStore } from '../connectors/secrets.js';
-import type { ServerConfig, ServerStatus } from '../connectors/types.js';
+import type { ServerConfig, ServerStatus, ToolInfo } from '../connectors/types.js';
+import type { GatherResult } from '../agent/loop.js';
 
 export interface ApiDeps {
   registry: ConnectorRegistry; manager: ConnectorManager; secrets: SecretStore; audit: AuditLog;
@@ -16,6 +17,10 @@ export interface ApiDeps {
   claudeJsonPath: string; scanDirs: () => string[]; addScanDir: (dir: string) => void; clock: () => number;
   /** Set by Task 10/11: lets Studio show the pending "Continue sign-in" link for a connector mid-OAuth-flow. */
   oauth?: { pendingUrl(id: string): string | undefined };
+  /** Coco's built-in tools (the terminal), shown as their own Studio card. */
+  builtinTools?: () => ToolInfo[];
+  /** Studio playground: runs the real tool-gather step for a question (read-only tools run; ask-first ones are only reported). */
+  playground?: (question: string) => Promise<GatherResult>;
 }
 export interface ApiRequest { method: string; path: string; query: URLSearchParams; body: unknown }
 export interface ApiResponse { status: number; json: unknown }
@@ -24,6 +29,7 @@ const ok = (json: unknown): ApiResponse => ({ status: 200, json });
 const err = (status: number, error: string): ApiResponse => ({ status, json: { error } });
 const defaultStatus = (id: string): ServerStatus => ({ id, state: 'disconnected', toolCount: 0, since: 0 }); // M8
 
+const PlaygroundBody = z.object({ question: z.string().trim().min(1).max(500) });
 const ImportBody = z.object({ key: z.string().min(1), confirm: z.literal(true) });
 // I3: control characters (e.g. a pasted multi-line PEM/JSON credential) and oversize values are rejected here,
 // up front, before anything is written to the registry or the secret store.
@@ -190,6 +196,24 @@ export async function handleApi(req: ApiRequest, deps: ApiDeps): Promise<ApiResp
         deps.audit.record({ ts: deps.clock(), serverId: info.serverId, tool: info.name, decision: 'confirmed', ok: result.ok, ms: result.ms, resultChars: result.text.length, args: body.data.args });
         return ok(result);
       }
+    }
+    if (method === 'GET' && path === '/api/builtin') {
+      const tools = (deps.builtinTools?.() ?? []).map((t) => ({
+        qualified: t.qualified, name: t.name, description: t.description,
+        mode: deps.registry.autonomy(t.qualified) ?? 'auto',
+      }));
+      return ok({ tools });
+    }
+    if (method === 'POST' && path === '/api/playground/ask') {
+      const body = PlaygroundBody.safeParse(req.body);
+      if (!body.success) return err(400, 'question must be 1–500 characters');
+      if (!deps.playground) return err(503, 'playground unavailable');
+      const r = await deps.playground(body.data.question);
+      return ok({
+        offered: r.offered ?? [],
+        runs: r.runs.map((x) => ({ tool: x.qualified, args: x.args, ok: x.result.ok, text: x.result.text, ms: x.result.ms, decision: x.decision })),
+        ...(r.pending ? { pending: { tool: r.pending.qualified, args: r.pending.args, reason: r.pending.reason } } : {}),
+      });
     }
     if (method === 'GET' && path === '/api/audit') {
       const limit = Number(req.query.get('limit') ?? '200');

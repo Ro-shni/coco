@@ -5,6 +5,8 @@ import { join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { AuditLog } from './agent/audit.js';
 import { ToolLoop } from './agent/loop.js';
+import { ShellTool } from './agent/shell.js';
+import { CompositeToolSource } from './agent/toolSource.js';
 import { ChatResponder } from './chat.js';
 import { PersonaFile, loadConfig } from './config.js';
 import { ConnectorManager } from './connectors/manager.js';
@@ -76,7 +78,8 @@ async function main(): Promise<void> {
   });
   manager.oauthProviderFor = (cfg) => oauth.providerFor(cfg);
   const audit = new AuditLog(join(dataDir, 'coco.db'), { storeArgs: config.debug.trace });
-  const tools = new ToolLoop({ gateway, manager, registry, audit, clock: Date.now, log });
+  const shell = new ShellTool({ clock: Date.now });
+  const tools = new ToolLoop({ gateway, manager: new CompositeToolSource(manager, shell), registry, audit, clock: Date.now, log });
   let scanDirs = [...config.connectors.scanDirs];
 
   let server: BrainServer | undefined;
@@ -123,6 +126,8 @@ async function main(): Promise<void> {
         sessions: new MemorySessionStore(),
         api: {
           registry, manager, secrets, audit, oauth,
+          builtinTools: () => [shell.info],
+          playground: (question) => tools.gather({ utterance: question, untrustedText: '' }),
           health: () => gateway.health(),
           models: { main: config.models.main, vision: config.models.vision ?? config.models.main },
           claudeJsonPath: join(homedir(), '.claude.json'),

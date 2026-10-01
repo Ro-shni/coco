@@ -33,7 +33,7 @@ function setup(extraServers: Record<string, unknown> = {}) {
   };
   const call = (method: string, path: string, body?: unknown, query = '') =>
     handleApi({ method, path, query: new URLSearchParams(query), body }, deps);
-  return { call, registry, secrets, manager, audit, root };
+  return { call, registry, secrets, manager, audit, root, deps };
 }
 
 describe('Studio API', () => {
@@ -302,5 +302,25 @@ describe('final security fixes', () => {
     const r = await s.call('POST', '/api/catalog/github/add', { confirm: true, headers: { Authorization: 'Bearer x', oauth_tokens: '{"access_token":"evil"}' } });
     expect(r.status).toBe(400);
     expect(await s.secrets.get(secretKey('github', 'oauth_tokens'))).toBeUndefined();
+  });
+});
+
+describe('builtin tools and playground', () => {
+  it('lists the terminal tool with its Studio mode', async () => {
+    const s = setup();
+    const res = await handleApi({ method: 'GET', path: '/api/builtin', query: new URLSearchParams(), body: undefined }, { ...s.deps, builtinTools: () => [{ serverId: 'coco', name: 'shell_run', qualified: 'coco__shell_run', description: 'Run a terminal command', inputSchema: {} }] });
+    expect(res.json).toEqual({ tools: [{ qualified: 'coco__shell_run', name: 'shell_run', description: 'Run a terminal command', mode: 'auto' }] });
+  });
+
+  it('playground returns offered tools, runs and pending without executing ask-first calls', async () => {
+    const s = setup();
+    const playground = vi.fn(async () => ({
+      offered: ['coco__shell_run'],
+      runs: [{ qualified: 'coco__shell_run', serverId: 'coco', tool: 'shell_run', args: { command: 'pgrep -fl claude' }, result: { ok: true, text: 'exit 0\n123 claude', ms: 4 }, decision: 'auto' as const }],
+      toolContext: '',
+    }));
+    const res = await handleApi({ method: 'POST', path: '/api/playground/ask', query: new URLSearchParams(), body: { question: 'how many claude terminals?' } }, { ...s.deps, playground });
+    expect(res.json).toEqual({ offered: ['coco__shell_run'], runs: [{ tool: 'coco__shell_run', args: { command: 'pgrep -fl claude' }, ok: true, text: 'exit 0\n123 claude', ms: 4, decision: 'auto' }] });
+    expect((await handleApi({ method: 'POST', path: '/api/playground/ask', query: new URLSearchParams(), body: { question: '' } }, { ...s.deps, playground })).status).toBe(400);
   });
 });

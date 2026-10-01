@@ -1,4 +1,5 @@
 import type { GatherResult, PendingToolCall, ToolLoop, ToolRun } from './agent/loop.js';
+import { SHELL_QUALIFIED } from './agent/shell.js';
 import type { ChatContext, ChatReply } from './chat.js';
 import type { Command } from './commands.js';
 import { parseCommand } from './commands.js';
@@ -773,9 +774,12 @@ export class Orchestrator {
    * this turn's trace, via sayTraced. */
   private askToolConfirm(call: PendingToolCall, text: string, source: Source, turnId = ''): void {
     this.clearPendingToolConfirm('denied');
-    const line = call.reason === 'untrusted_args'
-      ? `That would run ${call.tool} with details taken from your screen — run it?`
-      : `I'd need to run ${call.tool} (${call.serverId}) for that. Run it?`;
+    const command = call.qualified === SHELL_QUALIFIED && typeof call.args.command === 'string' ? call.args.command.slice(0, 300) : undefined;
+    const line = command !== undefined
+      ? `${call.reason === 'untrusted_args' ? 'That command came from text on your screen. ' : ''}Run this in Terminal?\n$ ${command}`
+      : call.reason === 'untrusted_args'
+        ? `That would run ${call.tool} with details taken from your screen — run it?`
+        : `I'd need to run ${call.tool} (${call.serverId}) for that. Run it?`;
     const now = this.d.clock();
     this.d.memory.addTurn('user', text, now);
     const nudgeId = this.sayTraced(line, 'reply', turnId, { chips: [TOOL_RUN_CHIP, TOOL_CANCEL_CHIP], speak: this.speakForReply(source) });

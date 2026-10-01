@@ -1,4 +1,4 @@
-import type { ConnectorManager, ToolResult } from '../connectors/manager.js';
+import type { ToolResult } from '../connectors/manager.js';
 import type { ConnectorRegistry } from '../connectors/registry.js';
 import type { Logger } from '../logger.js';
 import { PRIORITY, type ToolCapableGateway, type ToolChatMessage, type ToolSpec } from '../model/gateway.js';
@@ -6,10 +6,11 @@ import { wrapUntrusted } from '../persona/prompt.js';
 import type { AuditLog } from './audit.js';
 import { decide } from './autonomy.js';
 import { narrowTools } from './narrow.js';
+import type { ToolSource } from './toolSource.js';
 
 export interface ToolRun { qualified: string; serverId: string; tool: string; args: Record<string, unknown>; result: ToolResult; decision: 'auto' | 'confirmed' }
 export interface PendingToolCall { qualified: string; serverId: string; tool: string; args: Record<string, unknown>; reason: string }
-export interface GatherResult { runs: ToolRun[]; pending?: PendingToolCall; toolContext: string }
+export interface GatherResult { runs: ToolRun[]; pending?: PendingToolCall; toolContext: string; /** Qualified names of the tools offered to the model this turn (Studio playground). */ offered?: string[] }
 
 export const MAX_TOOL_CALLS = 3;
 /** M1: off/unknown calls never execute anything, but a single model response can list an unbounded number of them,
@@ -35,13 +36,14 @@ const truncateResult = (s: string): string => (s.length <= MAX_RESULT_CHARS ? s 
 export class ToolLoop {
   constructor(
     private readonly deps: {
-      gateway: ToolCapableGateway; manager: ConnectorManager; registry: ConnectorRegistry; audit: AuditLog; clock: () => number; log: Logger;
+      gateway: ToolCapableGateway; manager: ToolSource; registry: ConnectorRegistry; audit: AuditLog; clock: () => number; log: Logger;
     },
   ) {}
 
   async gather(input: { utterance: string; untrustedText: string }): Promise<GatherResult> {
     const tools = narrowTools(input.utterance, this.deps.manager.tools());
-    if (tools.length === 0) return { runs: [], toolContext: '' };
+    if (tools.length === 0) return { runs: [], toolContext: '', offered: [] };
+    const offered = tools.map((t) => t.qualified);
     const specs: ToolSpec[] = tools.map((t) => ({ name: t.qualified, description: t.description, parameters: t.inputSchema }));
     const messages: ToolChatMessage[] = [
       { role: 'system', content: SYSTEM },
@@ -68,7 +70,17 @@ export class ToolLoop {
         // I2: an argument copied from a tool result returned EARLIER THIS TURN must force confirm, exactly like
         // copying screen OCR — otherwise an injected result can drive an auto-mode tool into exfiltrating it.
         const untrustedSoFar = [input.untrustedText, ...runs.map((r) => r.result.text)].join('\n');
-        const d = decide({ qualified: info.qualified, toolName: info.name, args: call.arguments, override: this.deps.registry.autonomy(info.qualified), untrustedText: untrustedSoFar });
+        // Built-ins like the terminal decide per call from the arguments: blocked commands never run or ask, and a
+        // command that may change things always asks — whatever the Studio setting, except Off.
+        const policy = this.deps.manager.policyFor?.(info.qualified, call.arguments);
+        if (policy?.mode === 'block') {
+          this.deps.audit.record({ ts: this.deps.clock(), serverId: info.serverId, tool: info.name, decision: 'off', ok: null, ms: null, resultChars: null });
+          messages.push({ role: 'tool', tool_name: echoedName, content: `Blocked: ${policy.reason}. This command is not allowed.` });
+          continue;
+        }
+        const setting = this.deps.registry.autonomy(info.qualified);
+        const override = setting === 'off' ? 'off' : policy?.mode === 'confirm' ? 'confirm' : (setting ?? policy?.mode);
+        const d = decide({ qualified: info.qualified, toolName: info.name, args: call.arguments, ...(override ? { override } : {}), untrustedText: untrustedSoFar });
         if (d.mode === 'off') {
           this.deps.audit.record({ ts: this.deps.clock(), serverId: info.serverId, tool: info.name, decision: 'off', ok: null, ms: null, resultChars: null });
           messages.push({ role: 'tool', tool_name: echoedName, content: OFF_MESSAGE });
@@ -77,7 +89,7 @@ export class ToolLoop {
         if (d.mode === 'confirm') {
           // M8: a turn that stops at a confirm still gets a trace, not just turns that run to completion.
           this.deps.log.info('tool_gather', { offered: tools.length, runs: runs.length, pending: true });
-          return { runs, pending: { qualified: info.qualified, serverId: info.serverId, tool: info.name, args: call.arguments, reason: d.reason }, toolContext: this.renderContext(runs) };
+          return { runs, pending: { qualified: info.qualified, serverId: info.serverId, tool: info.name, args: call.arguments, reason: policy?.mode === 'confirm' && d.reason !== 'untrusted_args' ? policy.reason : d.reason }, toolContext: this.renderContext(runs), offered };
         }
         calls++;
         const run = await this.execute(info.qualified, info.serverId, info.name, call.arguments, 'auto');
@@ -88,7 +100,7 @@ export class ToolLoop {
       }
     }
     this.deps.log.info('tool_gather', { offered: tools.length, runs: runs.length });
-    return { runs, toolContext: this.renderContext(runs) };
+    return { runs, toolContext: this.renderContext(runs), offered };
   }
 
   async runConfirmed(call: PendingToolCall): Promise<GatherResult> {
@@ -116,6 +128,13 @@ export class ToolLoop {
     if (this.deps.registry.autonomy(info.qualified) === 'off') {
       this.deps.audit.record({ ts: this.deps.clock(), serverId: info.serverId, tool: info.name, decision: 'off', ok: null, ms: null, resultChars: null });
       return { runs: [], toolContext: '' };
+    }
+    const policy = this.deps.manager.policyFor?.(info.qualified, call.args);
+    if (policy?.mode === 'block') {
+      const result: ToolResult = { ok: false, text: `blocked: ${policy.reason} — nothing was run.`, ms: 0 };
+      this.deps.audit.record({ ts: this.deps.clock(), serverId: info.serverId, tool: info.name, decision: 'off', ok: false, ms: null, resultChars: result.text.length });
+      const run: ToolRun = { qualified: info.qualified, serverId: info.serverId, tool: info.name, args: call.args, result, decision: 'confirmed' };
+      return { runs: [run], toolContext: this.renderContext([run]) };
     }
     const run = await this.execute(info.qualified, info.serverId, info.name, call.args, 'confirmed');
     return { runs: [run], toolContext: this.renderContext([run]) };
