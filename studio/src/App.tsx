@@ -7,6 +7,7 @@ import { useRoute } from './hooks/useRoute';
 import { Activity } from './tabs/Activity';
 import { Connectors } from './tabs/Connectors';
 import { Home } from './tabs/Home';
+import { Terminal } from './tabs/Terminal';
 import { Playground } from './tabs/Playground';
 
 // AUTH deviation from the brief: no cookies, no retry loop. If sessionStorage has no session token at
@@ -36,6 +37,7 @@ export function App() {
         {route.page === 'activity' ? <Activity />
           : route.page === 'home' ? <Home />
           : route.page === 'playground' ? <Playground />
+          : route.page === 'terminal' ? <Terminal />
           : route.page === 'connector' ? <Connectors data={data} id={route.id} />
           : <Connectors data={data} onAdd={() => setAdding(true)} />}
       </main>
