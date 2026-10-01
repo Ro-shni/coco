@@ -28,7 +28,7 @@ async function launch(request: APIRequestContext, page: Page): Promise<void> {
 
 test('launch → import the discovered fixture server → it connects and a tool test works', async ({ page, request }) => {
   await launch(request, page);
-  await page.getByRole('button', { name: 'Connectors' }).click();
+  await page.getByRole('link', { name: 'Connectors' }).click();
   await page.getByTestId('discovered-fixture').getByRole('button', { name: 'Import' }).click();
   await expect(page.getByRole('dialog')).toContainText('mcp-server.mjs');
   await page.getByRole('button', { name: 'Run this server' }).click();
@@ -47,7 +47,7 @@ test('launch → import the discovered fixture server → it connects and a tool
 
 test('Activity lists the audited test run', async ({ page, request }) => {
   await launch(request, page);
-  await page.getByRole('button', { name: 'Activity' }).click();
+  await page.getByRole('link', { name: 'Activity' }).click();
   await expect(page.getByRole('row').filter({ hasText: 'echo' })).toHaveCount(1);
 });
 
