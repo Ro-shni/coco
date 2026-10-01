@@ -6,6 +6,7 @@ import { useRoute } from './hooks/useRoute';
 import { Activity } from './tabs/Activity';
 import { Connectors } from './tabs/Connectors';
 import { Home } from './tabs/Home';
+import { Playground } from './tabs/Playground';
 
 // AUTH deviation from the brief: no cookies, no retry loop. If sessionStorage has no session token at
 // startup, or any /api call comes back 401, show this full-page message instead of the app.
@@ -32,6 +33,7 @@ export function App() {
       <main>
         {route.page === 'activity' ? <Activity />
           : route.page === 'home' ? <Home />
+          : route.page === 'playground' ? <Playground />
           : route.page === 'connector' ? <Connectors data={data} id={route.id} />
           : <Connectors data={data} />}
       </main>
