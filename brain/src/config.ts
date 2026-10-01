@@ -18,6 +18,12 @@ const ConfigSchema = z
     voice: z.object({ enabled: z.boolean(), speakNudges: z.boolean(), speakTypedReplies: z.boolean() }),
     debug: z.object({ logContext: z.boolean(), trace: z.boolean() }),
     connectors: z.object({ scanDirs: z.array(z.string()), oauthCallbackPort: z.number().int().min(1024).max(65535) }),
+    claudeCode: z.object({
+      enabled: z.boolean(),
+      path: z.string(), // '' = find `claude` in ~/.local/bin, /opt/homebrew/bin, /usr/local/bin
+      allowedTools: z.array(z.string()),
+      timeoutMin: z.number().int().min(1).max(120),
+    }),
   })
   .refine((c) => c.nudge.tickMaxSec >= c.nudge.tickMinSec, {
     message: 'nudge.tickMaxSec must be >= nudge.tickMinSec',
@@ -35,6 +41,17 @@ export const DEFAULT_CONFIG: CocoConfig = Object.freeze({
   voice: { enabled: true, speakNudges: true, speakTypedReplies: false },
   debug: { logContext: false, trace: false },
   connectors: { scanDirs: [], oauthCallbackPort: 47823 },
+  claudeCode: {
+    enabled: true,
+    path: '',
+    // Read-only by default: reading/searching, skills and subagents, read-only MCP servers, and read-only shell.
+    allowedTools: [
+      'Read', 'Grep', 'Glob', 'LS', 'WebFetch', 'WebSearch', 'Skill', 'Task', 'Agent', 'TodoWrite',
+      'mcp__bifrost', 'mcp__kubectl-readonly', 'mcp__devops-brain',
+      'Bash(kubectl get:*)', 'Bash(kubectl describe:*)', 'Bash(kubectl logs:*)', 'Bash(git log:*)', 'Bash(git status:*)', 'Bash(git diff:*)',
+    ],
+    timeoutMin: 15,
+  },
 }) as CocoConfig;
 
 const isPlainObject = (x: unknown): x is Record<string, unknown> =>

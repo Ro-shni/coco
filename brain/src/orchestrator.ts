@@ -1,4 +1,5 @@
 import type { GatherResult, PendingToolCall, ToolLoop, ToolRun } from './agent/loop.js';
+import { CLAUDE_QUALIFIED, type ClaudeEvent } from './agent/claudeCode.js';
 import { SHELL_QUALIFIED } from './agent/shell.js';
 import type { ChatContext, ChatReply } from './chat.js';
 import type { Command } from './commands.js';
@@ -51,6 +52,10 @@ export interface OrchestratorDeps {
   trace?: DecisionTrace;
   /** Optional connector tool loop (agent/loop.ts) — omitted, every existing caller/test keeps working with no tools offered. */
   tools?: Pick<ToolLoop, 'gather' | 'runConfirmed' | 'recordDecision'>;
+  /** Optional Claude Code hand-off (agent/claudeCode.ts) — only `stop` is needed here; events arrive via onClaudeEvent. */
+  claude?: { stop(): boolean };
+  /** Turns a long Claude result into a short summary (the local model). Falls back to the raw text when it fails. */
+  summarize?: (text: string) => Promise<string>;
 }
 
 export const TOOL_RUN_CHIP = 'Run it';
@@ -161,6 +166,9 @@ const SHH_TODAY = 'shh for today';
 const UNMUTE = 'unmute';
 const DISMISS = 'dismiss';
 const CLEAR_CHAT = 'clear chat';
+const STOP_CLAUDE = /^(stop|cancel) (claude|claude code)[.!]*$/;
+const CLAUDE_PROGRESS_GAP_MS = 25_000;
+const CLAUDE_MAX_PROGRESS = 6;
 const FORGET_CHAT = 'forget this chat';
 const TEXT = {
   muted30: "Muted for 30 minutes. I'll still answer if you ask.",
@@ -262,6 +270,40 @@ export class Orchestrator {
       case 'open_url_result':
         return this.onOpenUrlResult(msg);
     }
+  }
+
+  private claudeProgress = { lastAt: -Infinity, count: 0 };
+
+  /** Progress + final answer from a background Claude Code run (agent/claudeCode.ts). */
+  async onClaudeEvent(e: ClaudeEvent): Promise<void> {
+    const now = this.d.clock();
+    if (e.kind === 'started') {
+      this.claudeProgress = { lastAt: now, count: 0 };
+      this.say('Claude Code started working on it.', 'status', { speak: false });
+      return;
+    }
+    if (e.kind === 'progress') {
+      if (now - this.claudeProgress.lastAt < CLAUDE_PROGRESS_GAP_MS && this.claudeProgress.count > 0) return;
+      if (this.claudeProgress.count >= CLAUDE_MAX_PROGRESS) return;
+      this.claudeProgress = { lastAt: now, count: this.claudeProgress.count + 1 };
+      this.say(`Claude: ${e.text.slice(0, 140)}`, 'status', { speak: false });
+      return;
+    }
+    const took = formatDuration(e.ms) + (e.costUsd !== undefined ? ` · $${e.costUsd.toFixed(2)}` : '');
+    if (!e.ok) {
+      this.say(`Claude didn't finish (${took}): ${e.result.slice(0, 300)}`, 'reply', { speak: this.d.config.voice.enabled && this.d.config.voice.speakNudges });
+      return;
+    }
+    let summary = e.result;
+    try {
+      if (this.d.summarize) summary = (await this.d.summarize(e.result)).trim() || e.result;
+    } catch {
+      this.d.log.warn('claude_summary_failed');
+    }
+    const resume = e.sessionId ? `\nResume it with: claude --resume ${e.sessionId}` : '';
+    const text = `Claude finished (${took}):\n${summary.slice(0, 1500)}${resume}`;
+    this.say(text, 'reply', { speak: this.d.config.voice.enabled && this.d.config.voice.speakNudges });
+    this.d.memory.addTurn('assistant', text, now);
   }
 
   onBodyConnected(): void {
@@ -385,6 +427,11 @@ export class Orchestrator {
     if (command === UNMUTE) {
       this.trace.setRoute(turnId, { via: 'mute' });
       return this.mute(now, TEXT.unmuted, turnId);
+    }
+    if (this.d.claude && STOP_CLAUDE.test(command)) {
+      this.trace.setRoute(turnId, { via: 'clear' });
+      this.sayTraced(this.d.claude.stop() ? 'Stopping Claude Code.' : "Claude Code isn't running anything.", 'reply', turnId);
+      return;
     }
     if (command === CLEAR_CHAT || command === FORGET_CHAT) {
       this.trace.setRoute(turnId, { via: 'clear' });
@@ -775,7 +822,10 @@ export class Orchestrator {
   private askToolConfirm(call: PendingToolCall, text: string, source: Source, turnId = ''): void {
     this.clearPendingToolConfirm('denied');
     const command = call.qualified === SHELL_QUALIFIED && typeof call.args.command === 'string' ? call.args.command.slice(0, 300) : undefined;
-    const line = command !== undefined
+    const claudeTask = call.qualified === CLAUDE_QUALIFIED && typeof call.args.task === 'string' ? call.args.task.slice(0, 300) : undefined;
+    const line = claudeTask !== undefined
+      ? `Hand this to Claude Code? It uses Claude tokens and sees what's on your screen.\n> ${claudeTask}`
+      : command !== undefined
       ? `${call.reason === 'untrusted_args' ? 'That command came from text on your screen. ' : ''}Run this in Terminal?\n$ ${command}`
       : call.reason === 'untrusted_args'
         ? `That would run ${call.tool} with details taken from your screen — run it?`
@@ -1077,4 +1127,9 @@ export class Orchestrator {
     this.trace.finishTurn(turnId);
     return id;
   }
+}
+
+function formatDuration(ms: number): string {
+  const sec = Math.round(ms / 1000);
+  return sec < 60 ? `${sec}s` : `${Math.floor(sec / 60)}m ${sec % 60}s`;
 }

@@ -1536,3 +1536,52 @@ describe('terminal confirmations', () => {
     expect(ask.chips).toEqual(['Run it', 'Cancel']);
   });
 });
+
+describe('Claude Code hand-off', () => {
+  const utter = (text: string) => ({ v: 1 as const, type: 'utterance' as const, text, source: 'chat' as const });
+  const claude = (over: Record<string, unknown> = {}) => ({ stop: vi.fn(() => true), ...over });
+
+  it('posts throttled progress lines while Claude works', async () => {
+    const s = setup({ claude: claude(), summarize: vi.fn(async (t: string) => t) });
+    await s.o.onClaudeEvent({ kind: 'started', runId: 'r1', sessionId: 'sess' });
+    await s.o.onClaudeEvent({ kind: 'progress', runId: 'r1', text: 'using bifrost: get pods' });
+    await s.o.onClaudeEvent({ kind: 'progress', runId: 'r1', text: 'running `kubectl get events`' }); // within 25 s → suppressed
+    s.advance(26_000);
+    await s.o.onClaudeEvent({ kind: 'progress', runId: 'r1', text: 'reading app.ts' });
+    const texts = s.says().map((m) => m.text);
+    expect(texts).toEqual(['Claude Code started working on it.', 'Claude: using bifrost: get pods', 'Claude: reading app.ts']);
+  });
+
+  it('summarises the final result with the local model and includes the resume id', async () => {
+    const summarize = vi.fn(async () => 'Root cause: OOMKilled after 10:40 deploy.\nFix: raise memory to 2Gi.');
+    const s = setup({ claude: claude(), summarize });
+    await s.o.onClaudeEvent({ kind: 'done', runId: 'r1', ok: true, result: 'long RCA …', sessionId: 'sess-123', costUsd: 0.84, ms: 134_000, transcriptPath: '/t.jsonl' });
+    expect(summarize).toHaveBeenCalledWith('long RCA …');
+    const last = s.says().at(-1)!;
+    expect(last.text).toBe('Claude finished (2m 14s · $0.84):\nRoot cause: OOMKilled after 10:40 deploy.\nFix: raise memory to 2Gi.\nResume it with: claude --resume sess-123');
+  });
+
+  it('falls back to the raw result if summarising fails, and reports failures plainly', async () => {
+    const s = setup({ claude: claude(), summarize: vi.fn(async () => { throw new Error('ollama down'); }) });
+    await s.o.onClaudeEvent({ kind: 'done', runId: 'r1', ok: true, result: 'Root cause: X.', ms: 5_000, transcriptPath: '/t' });
+    expect(s.says().at(-1)!.text).toBe('Claude finished (5s):\nRoot cause: X.');
+    await s.o.onClaudeEvent({ kind: 'done', runId: 'r2', ok: false, result: 'Stopped before it finished.', ms: 3_000, transcriptPath: '/t' });
+    expect(s.says().at(-1)!.text).toBe("Claude didn't finish (3s): Stopped before it finished.");
+  });
+
+  it('"stop claude" stops the run', async () => {
+    const c = claude();
+    const s = setup({ claude: c });
+    await s.o.handle(utter('stop claude'));
+    expect(c.stop).toHaveBeenCalled();
+    expect(s.says().at(-1)!.text).toBe('Stopping Claude Code.');
+  });
+
+  it('asks before handing off, showing the task and that it uses Claude tokens', async () => {
+    const call = { qualified: 'coco__claude_code', serverId: 'coco', tool: 'claude_code', args: { task: '/meesho-devops-rca:devops-rca checkout 5xx' }, reason: 'hands work to Claude Code (uses Claude tokens)' };
+    const tools = { gather: vi.fn().mockResolvedValue({ runs: [], pending: call, toolContext: '' }), runConfirmed: vi.fn(), recordDecision: vi.fn() };
+    const s = setup({ tools });
+    await s.o.handle(utter('run the devops rca skill on this in claude'));
+    expect(s.says().at(-1)!.text).toBe("Hand this to Claude Code? It uses Claude tokens and sees what's on your screen.\n> /meesho-devops-rca:devops-rca checkout 5xx");
+  });
+});
