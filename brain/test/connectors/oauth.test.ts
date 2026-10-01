@@ -72,6 +72,9 @@ describe('OAuthFlows.handleCallback', () => {
     const r = await s.flows.handleCallback(new URLSearchParams('code=abc&state=state-1'));
     expect(r).toMatchObject({ status: 200, serverId: 'atlassian' });
     expect(r.html).toContain('Signed in to Atlassian');
+    expect(r.html).toContain('You can close this tab.');
+    expect(r.html).toContain('&#10003;');
+    expect(r.html).not.toContain('<script');
     expect(s.authFn).toHaveBeenCalledWith(expect.anything(), { serverUrl: 'https://mcp.atlassian.com/v1/mcp', authorizationCode: 'abc' });
     // state is single-use
     expect((await s.flows.handleCallback(new URLSearchParams('code=abc&state=state-1'))).status).toBe(400);

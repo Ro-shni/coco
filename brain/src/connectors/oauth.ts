@@ -8,8 +8,17 @@ import type { ServerConfig } from './types.js';
 
 const TTL_MS = 10 * 60_000;
 const escapeHtml = (s: string) => s.replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' })[c]!);
-const page = (title: string, body: string) =>
-  `<!doctype html><meta charset="utf-8"><title>${escapeHtml(title)}</title><body style="font-family:-apple-system;padding:40px"><h2>${escapeHtml(title)}</h2><p>${escapeHtml(body)}</p></body>`;
+const PAGE_CSS = ':root{color-scheme:light dark;--bg:#fbf1e4;--card:#fffdf8;--fg:#2b1f38;--muted:#6f5f85;--line:#e6d8f0;--ok:#1f7a3d;--okbg:#dff3e5;--bad:#b3261e;--badbg:#fde4e1}'
+  + '@media(prefers-color-scheme:dark){:root{--bg:#17101f;--card:#221832;--fg:#f3ecff;--muted:#b3a6c9;--line:#3d2d52;--ok:#7fdc9b;--okbg:#1d3a28;--bad:#ff9a90;--badbg:#4a1f1c}}'
+  + '*{box-sizing:border-box}body{margin:0;min-height:100vh;display:grid;place-items:center;padding:24px;background:var(--bg);color:var(--fg);font:16px/1.5 ui-rounded,"SF Pro Rounded",-apple-system,system-ui,sans-serif}'
+  + 'main{width:min(420px,100%);background:var(--card);border:1px solid var(--line);border-radius:20px;padding:40px 32px;text-align:center}'
+  + '.icon{width:72px;height:72px;margin:0 auto 24px;border-radius:50%;display:grid;place-items:center;font-size:36px;font-weight:700;line-height:1}'
+  + '.ok{background:var(--okbg);color:var(--ok)}.bad{background:var(--badbg);color:var(--bad)}'
+  + 'h1{margin:0 0 8px;font-size:24px;line-height:1.25}p{margin:0;color:var(--muted)}.close{margin-top:24px;font-size:14px}';
+const page = (title: string, body: string, ok: boolean) =>
+  `<!doctype html><html lang="en"><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>${escapeHtml(title)}</title><style>${PAGE_CSS}</style>`
+  + `<body><main><div class="icon ${ok ? 'ok' : 'bad'}" role="img" aria-label="${ok ? 'Success' : 'Failed'}">${ok ? '&#10003;' : '&#10005;'}</div>`
+  + `<h1>${escapeHtml(title)}</h1><p>${escapeHtml(body)}</p><p class="close">You can close this tab.</p></main></body></html>`;
 
 /** One sign-in attempt (one browser tab): its own state, PKCE verifier, authorization URL and TTL. */
 interface Attempt { state: string; serverId: string; cfg: ServerConfig; provider: OAuthClientProvider; verifier?: string; url?: string; at: number }
@@ -122,21 +131,21 @@ export class OAuthFlows {
     const state = query.get('state') ?? '';
     const attempt = this.fresh(this.byState.get(state));
     this.byState.delete(state); // single-use: gone whether it was valid or not
-    if (!attempt) return { status: 400, html: page('Sign-in expired', 'This sign-in link is unknown or expired. Start again from Coco Studio.') };
+    if (!attempt) return { status: 400, html: page('Sign-in expired', 'This sign-in link is unknown or expired. Start again from Coco Studio.', false) };
     const error = query.get('error');
-    if (error) return { status: 400, html: page('Sign-in failed', `The provider said: ${error.slice(0, 100)}`) };
+    if (error) return { status: 400, html: page('Sign-in failed', `The provider said: ${error.slice(0, 100)}`, false) };
     const code = query.get('code');
-    if (!code) return { status: 400, html: page('Sign-in failed', 'No authorization code was returned.') };
+    if (!code) return { status: 400, html: page('Sign-in failed', 'No authorization code was returned.', false) };
     this.completing.set(attempt.serverId, attempt);
     try {
       await (this.deps.authFn ?? sdkAuth)(attempt.provider, { serverUrl: attempt.cfg.url!, authorizationCode: code, ...(this.deps.authFn ? {} : { fetchFn: safeFetch() }) });
     } catch (err) {
       const e = err as { name?: string; code?: string };
       this.deps.log?.warn('oauth_exchange_failed', { id: attempt.serverId, error: e.code ?? e.name ?? 'Error' });
-      return { status: 400, html: page('Sign-in failed', 'Could not complete sign-in. Try again from Coco Studio.') };
+      return { status: 400, html: page('Sign-in failed', 'Could not complete sign-in. Try again from Coco Studio.', false) };
     } finally {
       this.completing.delete(attempt.serverId);
     }
-    return { status: 200, html: page(`Signed in to ${attempt.cfg.name}`, 'You can close this tab.'), serverId: attempt.serverId };
+    return { status: 200, html: page(`Signed in to ${attempt.cfg.name}`, 'Coco can use it now.', true), serverId: attempt.serverId };
   }
 }
