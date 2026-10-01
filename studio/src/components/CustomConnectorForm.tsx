@@ -86,7 +86,7 @@ export function CustomConnectorForm({ onPreview }: { onPreview: (p: CustomConnec
         ))}
         <button type="button" onClick={addCredential}>{`Add ${credentialLabel}`}</button>
       </div>
-      <button type="submit" disabled={!canSubmit}>Add custom connector</button>
+      <button type="submit" className="primary" disabled={!canSubmit}>Add custom connector</button>
     </form>
   );
 }

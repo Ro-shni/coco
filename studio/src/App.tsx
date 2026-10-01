@@ -1,5 +1,6 @@
 import { useEffect, useState } from 'react';
 import { hasSession, onSessionExpired } from './api';
+import { AddConnectorModal } from './components/AddConnectorModal';
 import { Sidebar } from './components/Sidebar';
 import { useConnectors } from './hooks/useConnectors';
 import { useRoute } from './hooks/useRoute';
@@ -16,6 +17,7 @@ export function App() {
   const route = useRoute();
   const [expired, setExpired] = useState(() => !hasSession());
   const data = useConnectors();
+  const [adding, setAdding] = useState(false);
 
   useEffect(() => onSessionExpired(() => setExpired(true)), []);
 
@@ -29,14 +31,20 @@ export function App() {
 
   return (
     <div className="app">
-      <Sidebar route={route} connectors={data.connectors} />
+      <Sidebar route={route} connectors={data.connectors} onAdd={() => setAdding(true)} />
       <main>
         {route.page === 'activity' ? <Activity />
           : route.page === 'home' ? <Home />
           : route.page === 'playground' ? <Playground />
           : route.page === 'connector' ? <Connectors data={data} id={route.id} />
-          : <Connectors data={data} />}
+          : <Connectors data={data} onAdd={() => setAdding(true)} />}
       </main>
+      {adding && (
+        <AddConnectorModal
+          onClose={() => setAdding(false)}
+          onAdded={(id) => { setAdding(false); void data.reload(); if (id) location.hash = `connectors/${encodeURIComponent(id)}`; }}
+        />
+      )}
     </div>
   );
 }
