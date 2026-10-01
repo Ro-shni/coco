@@ -68,7 +68,7 @@ async function rollbackSecrets(deps: ApiDeps, id: string, names: Iterable<string
 function toolsFor(deps: ApiDeps, id: string) {
   return deps.manager.tools().filter((t) => t.serverId === id).map((t) => {
     const d = decide({ qualified: t.qualified, toolName: t.name, args: {}, override: deps.registry.autonomy(t.qualified), untrustedText: '' });
-    return { qualified: t.qualified, name: t.name, description: t.description, mode: d.mode, reason: d.reason };
+    return { qualified: t.qualified, name: t.name, description: t.description, mode: d.mode, reason: d.reason, inputSchema: t.inputSchema };
   });
 }
 

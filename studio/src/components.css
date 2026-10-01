@@ -78,3 +78,14 @@ th { font-weight: 650; color: var(--muted); }
 .card-link::after { content: ""; position: absolute; inset: 0; border-radius: var(--r-md); }
 .connector-card:hover { border-color: var(--accent); }
 .dialog-wide { width: min(760px, 100%); }
+
+/* Try it */
+.try-form { display: grid; gap: var(--s2); padding: var(--s2); margin-top: var(--s1); background: var(--surface-2); border-radius: var(--r-md); }
+.field { display: grid; gap: 4px; }
+.field-toggle { grid-template-columns: auto 1fr; align-items: center; column-gap: 8px; }
+.field-toggle .field-hint { grid-column: 2; }
+.field-label { font-size: var(--t-small); font-weight: 650; }
+.req { color: var(--bad); }
+.field-hint { margin: 0; }
+.result-panel { display: grid; gap: var(--s1); }
+.result-panel summary { cursor: pointer; font-size: var(--t-small); font-weight: 600; margin-bottom: 4px; }

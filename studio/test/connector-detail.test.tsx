@@ -88,3 +88,41 @@ describe('Connector detail', () => {
     expect(screen.queryByLabelText('Filter tools')).toBeNull();
   });
 });
+
+describe('Try it', () => {
+  const tools = [{ qualified: 'atlassian__search', name: 'search', description: 'Search', mode: 'auto', reason: '',
+    inputSchema: { type: 'object', required: ['query'], properties: { query: { type: 'string' }, limit: { type: 'integer' } } } }];
+
+  it('generates a form from the schema, posts typed args and pretty-prints JSON results', async () => {
+    const calls = mockFetch({ 'POST /api/tools/atlassian__search/test': () => ({ ok: true, text: '{"hits":[1,2]}', ms: 42 }) });
+    view(connector({ tools }));
+    await userEvent.click(screen.getByRole('button', { name: /try it/i }));
+    const run = screen.getByRole('button', { name: 'Run' });
+    await userEvent.type(screen.getByLabelText(/^query/), 'wordle');
+    await userEvent.type(screen.getByLabelText('limit'), '3');
+    await userEvent.click(run);
+    await waitFor(() => expect(calls.find((c) => c.key === 'POST /api/tools/atlassian__search/test')?.body).toEqual({ args: { query: 'wordle', limit: 3 } }));
+    expect(await screen.findByText('ok')).toBeTruthy();
+    expect(screen.getByText('42 ms')).toBeTruthy();
+    expect(screen.getByText(/"hits": \[/)).toBeTruthy();
+  });
+
+  it('blocks Run with a clear message when a required field is empty', async () => {
+    const calls = mockFetch({});
+    view(connector({ tools }));
+    await userEvent.click(screen.getByRole('button', { name: /try it/i }));
+    await userEvent.click(screen.getByRole('button', { name: 'Run' }));
+    expect((await screen.findByRole('alert')).textContent).toBe('query is required.');
+    expect(calls.length).toBe(0);
+  });
+
+  it('shows an error badge when the call fails', async () => {
+    mockFetch({ 'POST /api/tools/atlassian__search/test': () => ({ ok: false, text: 'denied by server', ms: 7 }) });
+    view(connector({ tools }));
+    await userEvent.click(screen.getByRole('button', { name: /try it/i }));
+    await userEvent.type(screen.getByLabelText(/^query/), 'x');
+    await userEvent.click(screen.getByRole('button', { name: 'Run' }));
+    expect(await screen.findByText('error')).toBeTruthy();
+    expect(screen.getByText('denied by server')).toBeTruthy();
+  });
+});

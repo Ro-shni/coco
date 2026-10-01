@@ -1,5 +1,6 @@
 import type { ToolView } from '../types';
 import { PermissionControl } from './PermissionControl';
+import { TryIt } from './TryIt';
 
 export function ToolRow({ tool, onChanged }: { tool: ToolView; onChanged: () => void }) {
   return (
@@ -9,6 +10,7 @@ export function ToolRow({ tool, onChanged }: { tool: ToolView; onChanged: () => 
         <p className="muted small tool-desc">{firstLine(tool.description)}</p>
       </div>
       <PermissionControl qualified={tool.qualified} name={tool.name} mode={tool.mode} onChanged={onChanged} />
+      <TryIt tool={tool} />
     </li>
   );
 }
