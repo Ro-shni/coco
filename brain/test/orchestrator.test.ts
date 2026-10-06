@@ -1593,3 +1593,14 @@ describe('honesty after a real terminal run', () => {
     expect(s.reply.mock.calls[0]![1].toolSucceeded).toEqual({ tool: 'shell_run', serverId: 'coco' });
   });
 });
+
+describe('a user question always gets an answer', () => {
+  it('says the brain is offline even while the user is typing (status bubbles are suppressed then)', async () => {
+    const { ModelUnavailableError } = await import('../src/model/gateway.js');
+    const s = setup();
+    s.reply.mockRejectedValueOnce(new ModelUnavailableError('Ollama unreachable'));
+    await s.o.handle({ v: 1, type: 'activity', state: 'typing', ts: T0 });
+    await s.o.handle({ v: 1, type: 'utterance', text: 'whats running on my window rn?', source: 'chat' });
+    expect(s.says().map((m) => m.text)).toContain("My brain's offline right now (Ollama isn't answering). I'll be back when it is.");
+  });
+});

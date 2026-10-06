@@ -798,11 +798,11 @@ export class Orchestrator {
       // confirm chip that's out of trace scope) has nothing further to wait for.
       if (!executesAction) this.trace.finishTurn(turnId);
     } catch (err) {
-      const wasOnline = this.online;
       this.onModelError(err);
+      // A question the user asked always gets an answer: the offline *status* bubble can be suppressed while
+      // they type, so the reply itself must say the brain is down (the status line is skipped if it repeats it).
       if (!(err instanceof ModelUnavailableError)) this.sayTraced(TEXT.genericError, 'reply', turnId);
-      else if (!wasOnline) this.sayTraced(TEXT.offlineReply, 'reply', turnId);
-      else this.trace.finishTurn(turnId);
+      else this.sayTraced(TEXT.offlineReply, 'reply', turnId);
     }
   }
 
