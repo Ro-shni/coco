@@ -70,10 +70,9 @@ const TOOL_CONFIRM_EXPIRED_TEXT = 'That request expired — ask me again.';
 /** N3: a second click on a chip whose confirm was already run, failed, turned off, or cancelled. */
 const TOOL_CONFIRM_HANDLED_TEXT = 'That was already handled.';
 /** N2: a spoken/typed "yes" to a pending write confirm is not a click — only the button runs it. */
-const TOOL_CONFIRM_BUTTON_ONLY_TEXT = "Tap Run it to confirm — I only run that from the button.";
 /** N2: beyond offers.ts's general isAffirmation ("sure", "yes", "go ahead", "do it", …), a tool-confirm
  * specifically also accepts "run it" and "confirm" — the chip's own label and the obvious synonym. */
-const TOOL_CONFIRM_AFFIRMATION = /^(?:run it|confirm)[.! ]*$/i;
+const TOOL_CONFIRM_AFFIRMATION = /^(?:(?:yes|yeah|yep|ok|okay|sure|please|go|go ahead|do it|run|run it|confirm|execute|proceed)[\s,.!]*)+$/i;
 
 interface PendingNudge {
   id: string;
@@ -206,7 +205,9 @@ function hostOf(url: string): string | undefined {
 function lastSuccessfulRun(runs: readonly ToolRun[]): { tool: string; serverId: string } | undefined {
   for (let i = runs.length - 1; i >= 0; i--) {
     const run = runs[i]!;
-    if (run.decision === 'confirmed' && run.result.ok) return { tool: run.tool, serverId: run.serverId };
+    // A terminal command really did something even when it ran without a click (user rule: only deletes ask), so
+    // a reply reporting it ("pushed your branch") is honest; a connector lookup that auto-ran is not.
+    if ((run.decision === 'confirmed' || run.qualified === SHELL_QUALIFIED) && run.result.ok) return { tool: run.tool, serverId: run.serverId };
   }
   return undefined;
 }
@@ -395,11 +396,12 @@ export class Orchestrator {
   private async onUtterance(text: string, source: Source): Promise<void> {
     const now = this.d.clock();
     const turnId = this.trace.startTurn({ source, text });
-    // N2: a pending write confirm runs ONLY from its own "Run it" chip — a spoken/typed "yes" (or "run it"/
-    // "confirm") must never be read as that click. Keep the confirm pending, say so, and never call the
-    // model on this turn (so no reply can imply the write happened when nothing ran).
+    // User rule (2026-10-06): a typed or spoken "run"/"yes"/"go ahead" while a confirm is pending is the same
+    // as clicking Run it — it goes through the chip handler, so expiry, auditing and the result reply are
+    // identical. Only the user's own utterance can do this; screen text and chips from other bubbles cannot.
     if (this.pendingToolConfirm && this.isToolConfirmAffirmation(text)) {
-      this.sayTraced(TOOL_CONFIRM_BUTTON_ONLY_TEXT, 'reply', turnId, { speak: this.speakForReply(source) });
+      this.trace.finishTurn(turnId);
+      await this.handleToolChip(this.pendingToolConfirm.nudgeId, TOOL_RUN_CHIP);
       return;
     }
     // I2: any other new utterance means the user has moved on from a still-armed write confirm — disarm it

@@ -1448,36 +1448,33 @@ describe('tools', () => {
     expect(ctx.toolSucceeded).toBeUndefined(); // but never flips off the honesty check
   });
 
-  it('N2: an affirmation while a confirm is pending keeps it armed, says the button-only line, and never calls the model', async () => {
-    const tools = fakeTools({ runs: [], pending: pendingCall, toolContext: '' });
-    const s = setup({ tools });
-    await s.o.handle(utter('create a jira issue for this bug'));
-    await s.o.handle(utter('yes'));
-    expect(tools.recordDecision).not.toHaveBeenCalled();
-    expect(s.reply).not.toHaveBeenCalled();
-    expect(s.says().at(-1)!.text).toBe('Tap Run it to confirm — I only run that from the button.');
-  });
-
-  it.each(['yes', 'run it', 'Run it.', 'confirm', 'go ahead', 'do it', 'sure', 'ok'])(
-    'N2: "%s" is read as an affirmation of the pending confirm, not a denial',
+  it.each(['yes', 'run', 'run it', 'Run it.', 'confirm', 'go ahead', 'do it', 'sure', 'ok', 'yes run it'])(
+    'typed/spoken "%s" while a confirm is pending runs it, exactly like the Run it button (user rule)',
     async (utterance) => {
       const tools = fakeTools({ runs: [], pending: pendingCall, toolContext: '' });
       const s = setup({ tools });
       await s.o.handle(utter('create a jira issue for this bug'));
       await s.o.handle(utter(utterance));
+      expect(tools.runConfirmed).toHaveBeenCalledWith(pendingCall);
       expect(tools.recordDecision).not.toHaveBeenCalled();
-      expect(s.says().at(-1)!.text).toBe('Tap Run it to confirm — I only run that from the button.');
     },
   );
 
-  it('N2: the chip still runs the pending confirm after an affirmation utterance', async () => {
+  it('a typed "run" after the confirm expired says so and runs nothing', async () => {
     const tools = fakeTools({ runs: [], pending: pendingCall, toolContext: '' });
     const s = setup({ tools });
     await s.o.handle(utter('create a jira issue for this bug'));
-    const ask = s.says().at(-1)!;
-    await s.o.handle(utter('yes'));
-    await s.o.handle(chip(ask.nudgeId, 'Run it'));
-    expect(tools.runConfirmed).toHaveBeenCalledWith(pendingCall);
+    s.advance(121_000);
+    await s.o.handle(utter('run'));
+    expect(tools.runConfirmed).not.toHaveBeenCalled();
+    expect(s.says().at(-1)!.text).toBe("That request expired — ask me again.");
+  });
+
+  it('a typed "run" with nothing pending is just a normal message', async () => {
+    const tools = fakeTools({ runs: [], toolContext: '' });
+    const s = setup({ tools });
+    await s.o.handle(utter('run'));
+    expect(tools.runConfirmed).not.toHaveBeenCalled();
   });
 
   it('N2: a non-affirmation utterance still clears and denies the pending confirm (I2 unchanged)', async () => {
@@ -1583,5 +1580,16 @@ describe('Claude Code hand-off', () => {
     const s = setup({ tools });
     await s.o.handle(utter('run the devops rca skill on this in claude'));
     expect(s.says().at(-1)!.text).toBe("Hand this to Claude Code? It uses Claude tokens and sees what's on your screen.\n> /meesho-devops-rca:devops-rca checkout 5xx");
+  });
+});
+
+describe('honesty after a real terminal run', () => {
+  const utter = (text: string) => ({ v: 1 as const, type: 'utterance' as const, text, source: 'chat' as const });
+  it('a successful auto-run terminal command lets the reply report what it did', async () => {
+    const run = { qualified: 'coco__shell_run', serverId: 'coco', tool: 'shell_run', args: { command: 'git push' }, result: { ok: true, text: 'exit 0\nTo github…', ms: 900 }, decision: 'auto' as const };
+    const tools = { gather: vi.fn().mockResolvedValue({ runs: [run], toolContext: 'CTX' }), runConfirmed: vi.fn(), recordDecision: vi.fn() };
+    const s = setup({ tools });
+    await s.o.handle(utter('push my branch'));
+    expect(s.reply.mock.calls[0]![1].toolSucceeded).toEqual({ tool: 'shell_run', serverId: 'coco' });
   });
 });

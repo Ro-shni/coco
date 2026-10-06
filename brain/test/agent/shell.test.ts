@@ -30,23 +30,50 @@ describe('classifyCommand', () => {
   });
 
   it.each([
-    'ps aux | grep claude', // pipes need a click
+    'ps aux | grep claude', // pipes are fine now
     'ls && touch x',
-    'cat $(echo /etc/passwd)', // substitution
-    'cat `whoami`',
-    'echo hi > out.txt', // redirection
-    'find . -name x -delete',
-    'find . -exec rm {} \\;',
+    'cat $(echo notes.txt)',
     'git push',
     'git checkout -b x',
-    'top', // interactive without -l
     'npm install',
     'kubectl get pods -n default',
     'helm list',
     'python3 script.py',
     'brew upgrade',
+    'echo hi >> log.txt', // append is not a delete
+    'npm run build 2>&1 | tail -5',
+    'mv a.txt b.txt',
+  ])('auto (user rule: everything except deletes): %s', (cmd) => {
+    expect(classifyCommand(cmd).mode).toBe('auto');
+  });
+
+  it.each([
     'rm notes.txt',
-  ])('confirm: %s', (cmd) => {
+    'rm -rf build',
+    'ls && rm x',
+    'rmdir old',
+    'unlink a',
+    'find . -name x -delete',
+    'find . -exec rm {} \\;',
+    'echo hi > out.txt', // overwrites a file
+    'git clean -fd',
+    'git reset --hard HEAD~1',
+    'git push --force',
+    'git push -f origin main',
+    'git branch -D feature',
+    'git stash drop',
+    'kill 1234',
+    'pkill node',
+    'killall Safari',
+    'kubectl delete pod x',
+    'helm uninstall app',
+    'docker rm abc',
+    'docker system prune -a',
+    'brew uninstall ffmpeg',
+    'npm uninstall react',
+    'truncate -s 0 big.log',
+    'mysql -e "DROP TABLE users"',
+  ])('confirm (deletes/destructive): %s', (cmd) => {
     expect(classifyCommand(cmd).mode).toBe('confirm');
   });
 
@@ -119,7 +146,7 @@ describe('ShellTool', () => {
 
   it('policy follows the classifier and rejects a bad cwd', () => {
     expect(tool.policy({ command: 'pgrep -fl claude' })).toEqual({ mode: 'auto', reason: 'read-only command' });
-    expect(tool.policy({ command: 'git push' }).mode).toBe('confirm');
+    expect(tool.policy({ command: 'rm notes.txt' }).mode).toBe('confirm');
     expect(tool.policy({ command: 'sudo ls' }).mode).toBe('block');
     expect(tool.policy({ command: 'ls', cwd: 'relative/dir' }).mode).toBe('block');
     expect(tool.policy({}).mode).toBe('block');

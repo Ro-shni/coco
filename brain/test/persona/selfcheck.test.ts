@@ -222,3 +222,24 @@ describe('claimsPendingAction', () => {
   });
 });
 
+
+describe('claimsUnperformedAction — "running" claims', () => {
+  it.each([
+    'Runnig in background: `npx tsc` and `npx jest`. Want me to bring Terminal to the front?',
+    'Running `npm test` now.',
+    "I'm running the build in the background.",
+    'Kicked off `git pull` for you.',
+    'Executing the migration right now.',
+  ])('flags: %s', (t) => {
+    expect(claimsUnperformedAction(t)).not.toBeNull();
+  });
+
+  it.each([
+    'Want me to run the tests?',
+    'You have 38 Claude processes running.',
+    'The server is running on port 3000.',
+    'Is the build running?',
+  ])('does not flag: %s', (t) => {
+    expect(claimsUnperformedAction(t)).toBeNull();
+  });
+});

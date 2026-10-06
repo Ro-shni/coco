@@ -33,11 +33,11 @@ describe('terminal tool in the tool loop', () => {
     expect(s.audit.list()[0]).toMatchObject({ serverId: 'coco', tool: 'shell_run', decision: 'auto', ok: true });
   });
 
-  it('asks before anything that may change things', async () => {
-    const s = setup([call('git push')]);
-    const out = await s.loop.gather({ utterance: 'run git push in the terminal', untrustedText: '' });
+  it('asks before deleting anything', async () => {
+    const s = setup([call('rm notes.txt')]);
+    const out = await s.loop.gather({ utterance: 'delete notes in the terminal', untrustedText: '' });
     expect(out.runs).toEqual([]);
-    expect(out.pending).toMatchObject({ qualified: SHELL_QUALIFIED, args: { command: 'git push' }, reason: 'may change things' });
+    expect(out.pending).toMatchObject({ qualified: SHELL_QUALIFIED, args: { command: 'rm notes.txt' }, reason: 'deletes or destroys something' });
   });
 
   it('refuses blocked commands without asking, and audits them as off', async () => {
