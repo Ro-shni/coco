@@ -131,7 +131,7 @@ export class ShellTool {
     name: SHELL_TOOL_NAME,
     qualified: SHELL_QUALIFIED,
     description:
-      'Run a terminal (shell) command on this Mac and read its output: check running processes, terminals, files, folders, logs, disk space, git, builds, tests. Commands run immediately; only deleting or destroying something needs the user to confirm.',
+      'Run a terminal (shell) command on this Mac and read its output: check running processes, terminals, files, folders, logs, disk space, git, builds, tests. Commands run immediately; only deleting or destroying something needs the user to confirm. Never use this to start Claude, Claude Code or a skill — use coco__claude_code for that.',
     inputSchema: {
       type: 'object',
       properties: {

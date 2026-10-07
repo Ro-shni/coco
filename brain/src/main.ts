@@ -7,6 +7,7 @@ import { AuditLog } from './agent/audit.js';
 import { ToolLoop } from './agent/loop.js';
 import { ShellTool } from './agent/shell.js';
 import { ClaudeCodeRunner, ClaudeCodeTool } from './agent/claudeCode.js';
+import { FindSkillsTool, SkillCatalog, skillHint } from './agent/skills.js';
 import { describeScreen, wrapUntrusted } from './persona/prompt.js';
 import { PRIORITY, type ModelGateway } from './model/gateway.js';
 import { CompositeToolSource } from './agent/toolSource.js';
@@ -81,6 +82,10 @@ async function main(): Promise<void> {
   manager.oauthProviderFor = (cfg) => oauth.providerFor(cfg);
   const audit = new AuditLog(join(dataDir, 'coco.db'), { storeArgs: config.debug.trace });
   const shell = new ShellTool({ clock: Date.now });
+  const skills = new SkillCatalog({ home: homedir() });
+  skills.refresh();
+  log.info('skills_indexed', { installed: skills.installed().length, installable: skills.installable().length });
+  const findSkills = new FindSkillsTool(skills);
   const timeline = new Timeline();
   let orchestratorRef: Orchestrator | undefined;
   const claudePath = config.claudeCode.path || [join(homedir(), '.local/bin/claude'), '/opt/homebrew/bin/claude', '/usr/local/bin/claude'].find((p) => existsSync(p)) || 'claude';
@@ -112,7 +117,7 @@ async function main(): Promise<void> {
         { role: 'user', content: wrapUntrusted('claude-code', text.slice(0, 12_000)) },
       ],
     });
-  const tools = new ToolLoop({ gateway, manager: new CompositeToolSource(manager, shell, claudeTool), registry, audit, clock: Date.now, log });
+  const tools = new ToolLoop({ gateway, manager: new CompositeToolSource(manager, shell, claudeTool, findSkills), registry, audit, clock: Date.now, log });
   let scanDirs = [...config.connectors.scanDirs];
 
   let server: BrainServer | undefined;
@@ -135,6 +140,7 @@ async function main(): Promise<void> {
     tools,
     ...(claudeTool ? { claude: claudeRunner } : {}),
     summarize,
+    skillHint: (u) => skillHint(skills, u),
   });
   orchestratorRef = orchestrator;
 
@@ -162,7 +168,7 @@ async function main(): Promise<void> {
         sessions: new MemorySessionStore(),
         api: {
           registry, manager, secrets, audit, oauth,
-          builtinTools: () => [shell.info, ...(claudeTool ? [claudeTool.info] : [])],
+          builtinTools: () => [shell.info, ...(claudeTool ? [claudeTool.info] : []), findSkills.info],
           playground: (question) => tools.gather({ utterance: question, untrustedText: '' }),
           health: () => gateway.health(),
           models: { main: config.models.main, vision: config.models.vision ?? config.models.main },
@@ -213,6 +219,7 @@ async function main(): Promise<void> {
 
   void manager.connectAll();
   const connectRetryTimer = setInterval(() => void manager.connectAll(), CONNECT_RETRY_MS);
+  const skillRefreshTimer = setInterval(() => skills.refresh(), 10 * 60_000);
 
   setInterval(() => {
     orchestrator.pulse().catch((err: unknown) => log.error('pulse_failed', { error: String(err) }));
@@ -236,6 +243,7 @@ async function main(): Promise<void> {
     stopping = true;
     log.info('shutdown', { reason });
     clearInterval(connectRetryTimer);
+    clearInterval(skillRefreshTimer);
     await server?.close();
     await oauthCallbackServer?.close();
     claudeRunner.stop();

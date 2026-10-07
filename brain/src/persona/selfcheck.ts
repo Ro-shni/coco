@@ -32,6 +32,8 @@ const CLAIM_FORMS: readonly { form: RegExp; inQuestions: boolean }[] = [
   // "Runnig" in the wild, which slipped past an exact-word check).
   { form: /\b(?:run{1,2}i?n?g|runnig|executing|kicked off|kicking off)\b[^.!?\n]{0,80}?(?:\bin (?:the )?background\b|\bfor you\b|\bright now\b|\bnow\b|`[^`]+`)/i, inQuestions: false },
   { form: /\bin (?:the )?background\b/i, inQuestions: false },
+  // Promises of work nothing is doing: "I'll bring the terminal to the front and run `meesho RCSQ` for you."
+  { form: /\bI(?:'ll| will)\s+(?:\S+\s+){0,8}?(?:run|execute|invoke|kick off)\b/i, inQuestions: false },
   // (a) first person: "I sent", "I've just replied", "We've pinged"
   { form: new RegExp(`\\b(?:i|we)(?:'ve|'d| have| had)?\\s+(?:${ADVERB}\\s+)*(?:${COMPLETION_VERB})\\b`, 'i'), inQuestions: true },
   // (b) passive/stative about the thing: "It's sent", "Message sent to Prince", "Your message has been sent" (not "... sent by pagerduty")

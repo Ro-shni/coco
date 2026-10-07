@@ -40,13 +40,13 @@ export class ToolLoop {
     },
   ) {}
 
-  async gather(input: { utterance: string; untrustedText: string }): Promise<GatherResult> {
+  async gather(input: { utterance: string; untrustedText: string; hint?: string }): Promise<GatherResult> {
     const tools = narrowTools(input.utterance, this.deps.manager.tools());
     if (tools.length === 0) return { runs: [], toolContext: '', offered: [] };
     const offered = tools.map((t) => t.qualified);
     const specs: ToolSpec[] = tools.map((t) => ({ name: t.qualified, description: t.description, parameters: t.inputSchema }));
     const messages: ToolChatMessage[] = [
-      { role: 'system', content: SYSTEM },
+      { role: 'system', content: input.hint ? `${SYSTEM}\n\n${input.hint}` : SYSTEM },
       { role: 'user', content: input.utterance },
     ];
     const runs: ToolRun[] = [];

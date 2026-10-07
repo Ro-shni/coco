@@ -243,3 +243,13 @@ describe('claimsUnperformedAction — "running" claims', () => {
     expect(claimsUnperformedAction(t)).toBeNull();
   });
 });
+
+describe('claimsUnperformedAction — promises', () => {
+  it('flags a promise to run something', () => {
+    expect(claimsUnperformedAction('I’ll bring the terminal to the front and run `meesho RCSQ` for you.'.replace('’', "'"))).not.toBeNull();
+    expect(claimsUnperformedAction("I'll invoke Claude for you.")).not.toBeNull();
+  });
+  it('does not flag offers phrased as questions', () => {
+    expect(claimsUnperformedAction('Want me to run it?')).toBeNull();
+  });
+});

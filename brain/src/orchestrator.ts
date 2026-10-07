@@ -56,6 +56,8 @@ export interface OrchestratorDeps {
   claude?: { stop(): boolean };
   /** Turns a long Claude result into a short summary (the local model). Falls back to the raw text when it fails. */
   summarize?: (text: string) => Promise<string>;
+  /** Names the user's installed Claude skills that match an utterance, for the tool-gather model (agent/skills.ts). */
+  skillHint?: (utterance: string) => string | undefined;
 }
 
 export const TOOL_RUN_CHIP = 'Run it';
@@ -737,7 +739,8 @@ export class Orchestrator {
     let toolSucceeded = preset?.toolSucceeded;
     if (this.d.tools && intentText !== undefined) {
       try {
-        const gathered = await this.d.tools.gather({ utterance: text, untrustedText: cur?.msg.private ? '' : (cur?.msg.ocrText ?? '') });
+        const hint = this.d.skillHint?.(text);
+        const gathered = await this.d.tools.gather({ utterance: text, untrustedText: cur?.msg.private ? '' : (cur?.msg.ocrText ?? ''), ...(hint ? { hint } : {}) });
         if (gathered.pending) {
           this.askToolConfirm(gathered.pending, text, source, turnId);
           return;
