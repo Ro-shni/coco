@@ -102,6 +102,7 @@ async function main(): Promise<void> {
     ? new ClaudeCodeTool({
         runner: claudeRunner,
         defaultCwd: homedir(),
+        canonicalizeTask: (t) => skills.canonicalizeTask(t),
         screenText: () => {
           const cur = timeline.current();
           return cur && !cur.msg.private ? describeScreen(cur.msg) : undefined;

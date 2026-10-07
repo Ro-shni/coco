@@ -199,7 +199,12 @@ export class ClaudeCodeTool {
     },
   };
 
-  constructor(private readonly deps: { runner: ClaudeCodeRunner; defaultCwd: string; screenText: () => string | undefined }) {}
+  constructor(private readonly deps: { runner: ClaudeCodeRunner; defaultCwd: string; screenText: () => string | undefined; canonicalizeTask?: (task: string) => string }) {}
+
+  /** Fixes a misspelled leading skill command before the user is asked, so what they approve is what runs. */
+  normalize(args: Record<string, unknown>): Record<string, unknown> {
+    return typeof args.task === 'string' && this.deps.canonicalizeTask ? { ...args, task: this.deps.canonicalizeTask(args.task) } : args;
+  }
 
   policy(args: Record<string, unknown>): ShellPolicy {
     if (typeof args.task !== 'string' || args.task.trim() === '') return { mode: 'block', reason: 'no task given' };

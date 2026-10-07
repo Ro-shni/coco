@@ -56,7 +56,8 @@ export class ToolLoop {
       const res = await this.deps.gateway.chatWithTools({ messages, tools: specs, priority: PRIORITY.user });
       if (res.toolCalls.length === 0) break;
       messages.push({ role: 'assistant', content: res.content, tool_calls: res.toolCalls.map((c) => ({ function: { name: c.name, arguments: c.arguments } })) });
-      for (const call of res.toolCalls) {
+      for (const rawCall of res.toolCalls) {
+        const call = { ...rawCall, arguments: this.deps.manager.normalizeArgs?.(rawCall.name, rawCall.arguments) ?? rawCall.arguments };
         if (calls >= MAX_TOOL_CALLS || processed >= MAX_PROCESSED_CALLS) break;
         processed++;
         // R1-M1: a model-echoed name has no inherent length limit; bound it in every tool message, not just the

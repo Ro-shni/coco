@@ -105,3 +105,14 @@ describe('FindSkillsTool and skillHint', () => {
     expect(skillHint(cat, 'what is on my screen')).toBeUndefined();
   });
 });
+
+describe('canonicalizeTask', () => {
+  it('corrects a misspelled leading skill command and leaves good ones alone', () => {
+    const cat = new SkillCatalog({ home: fakeHome() });
+    cat.refresh();
+    expect(cat.canonicalizeTask('/mesho-devops-rca:devops-rca checkout 5xx alert')).toBe('/meesho-devops-rca:devops-rca checkout 5xx alert');
+    expect(cat.canonicalizeTask('/meesho-devops-rca:devops-rca x')).toBe('/meesho-devops-rca:devops-rca x');
+    expect(cat.canonicalizeTask('/totally-unknown:thing x')).toBe('/totally-unknown:thing x');
+    expect(cat.canonicalizeTask('explain this error')).toBe('explain this error');
+  });
+});

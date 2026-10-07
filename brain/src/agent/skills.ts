@@ -156,6 +156,21 @@ export class SkillCatalog {
       .map((x) => x.s);
   }
 
+  /** Corrects a leading slash command to the closest installed one ("/mesho-devops-rca:devops-rca" →
+   * "/meesho-devops-rca:devops-rca"); returns the task unchanged when it already matches or nothing is close. */
+  canonicalizeTask(task: string): string {
+    const m = /^\s*(\/[\w.-]+(?::[\w.-]+)?)(.*)$/s.exec(task);
+    if (!m) return task;
+    const cmd = m[1]!;
+    if (this.skills.some((s) => s.command === cmd)) return task;
+    let best: { command: string; sim: number } | undefined;
+    for (const s of this.skills) {
+      const sim = similarity(cmd.toLowerCase(), s.command.toLowerCase());
+      if (!best || sim > best.sim) best = { command: s.command, sim };
+    }
+    return best && best.sim >= 0.8 ? `${best.command}${m[2]}` : task;
+  }
+
   /** Installed matches plus installable plugins that match, for "is there a skill for X?". */
   suggest(query: string): { installed: InstalledSkill[]; installable: InstallablePlugin[] } {
     const q = tokens(query);

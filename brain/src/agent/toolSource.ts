@@ -9,6 +9,8 @@ export interface ToolSource {
   ensureConnected(serverId: string): Promise<unknown>;
   /** Per-call policy for built-in tools whose safety depends on the arguments (terminal command, Claude task). */
   policyFor?(qualified: string, args: Record<string, unknown>): ShellPolicy | undefined;
+  /** Lets a built-in tidy model-written arguments (e.g. correct a misspelled skill command) before any decision. */
+  normalizeArgs?(qualified: string, args: Record<string, unknown>): Record<string, unknown>;
 }
 
 /** A Coco built-in tool (terminal, Claude Code hand-off): always available, decides per call. */
@@ -16,6 +18,7 @@ export interface BuiltinTool {
   readonly info: ToolInfo;
   policy(args: Record<string, unknown>): ShellPolicy;
   call(args: Record<string, unknown>): Promise<ToolResult>;
+  normalize?(args: Record<string, unknown>): Record<string, unknown>;
 }
 
 export class CompositeToolSource implements ToolSource {
@@ -43,6 +46,10 @@ export class CompositeToolSource implements ToolSource {
   async ensureConnected(serverId: string): Promise<unknown> {
     if (this.builtins.some((b) => b.info.serverId === serverId)) return undefined;
     return this.manager.ensureConnected(serverId);
+  }
+
+  normalizeArgs(qualified: string, args: Record<string, unknown>): Record<string, unknown> {
+    return this.builtin(qualified)?.normalize?.(args) ?? args;
   }
 
   policyFor(qualified: string, args: Record<string, unknown>): ShellPolicy | undefined {
