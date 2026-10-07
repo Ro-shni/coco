@@ -23,6 +23,7 @@ const ConfigSchema = z
       path: z.string(), // '' = find `claude` in ~/.local/bin, /opt/homebrew/bin, /usr/local/bin
       allowedTools: z.array(z.string()),
       timeoutMin: z.number().int().min(1).max(120),
+      showTerminal: z.boolean().default(true), // open a Terminal window that follows each run's live log
     }),
   })
   .refine((c) => c.nudge.tickMaxSec >= c.nudge.tickMinSec, {
@@ -51,6 +52,7 @@ export const DEFAULT_CONFIG: CocoConfig = Object.freeze({
       'Bash(kubectl get:*)', 'Bash(kubectl describe:*)', 'Bash(kubectl logs:*)', 'Bash(git log:*)', 'Bash(git status:*)', 'Bash(git diff:*)',
     ],
     timeoutMin: 15,
+    showTerminal: true,
   },
 }) as CocoConfig;
 

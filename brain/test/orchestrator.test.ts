@@ -1599,6 +1599,25 @@ describe('Claude Code hand-off', () => {
     await s.o.handle(utter('run the devops rca skill on this in claude'));
     expect(s.says().at(-1)!.text).toBe("Hand this to Claude Code? It uses Claude tokens and sees what's on your screen.\n> /meesho-devops-rca:devops-rca checkout 5xx");
   });
+
+  it.each(['hand the session to claude code', 'send it to claude', 'ok just pass this to Claude Code'])(
+    '"%s" answering a pending Claude confirm runs it (it is a yes, not a new request)',
+    async (answer) => {
+      const call = { qualified: 'coco__claude_code', serverId: 'coco', tool: 'claude_code', args: { task: '/meesho-devops-rca:devops-rca pods in agentx' }, reason: 'hands work to Claude Code (uses Claude tokens)' };
+      const tools = { gather: vi.fn().mockResolvedValue({ runs: [], pending: call, toolContext: '' }), runConfirmed: vi.fn().mockResolvedValue({ runs: [], toolContext: '' }), recordDecision: vi.fn() };
+      const s = setup({ tools });
+      await s.o.handle(utter('use the rca skill to count pods in agentx'));
+      await s.o.handle(utter(answer));
+      expect(tools.runConfirmed).toHaveBeenCalledWith(call);
+      expect(tools.gather).toHaveBeenCalledTimes(1);
+    },
+  );
+
+  it('the started bubble points at the live Terminal log', async () => {
+    const s = setup({ claude: claude() });
+    await s.o.onClaudeEvent({ kind: 'started', runId: 'r', logPath: '/logs/r.log' });
+    expect(s.says().at(-1)!.text).toBe('Claude Code started — follow it live in the Terminal window I opened.\nLog: /logs/r.log');
+  });
 });
 
 describe('honesty after a real terminal run', () => {

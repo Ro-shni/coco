@@ -1,7 +1,7 @@
 import { readFileSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
 import { describe, expect, it, vi } from 'vitest';
-import { CANNOT_ACT_FALLBACK, ChatResponder, NO_ACTION_FALLBACK, NO_DRAFT_FALLBACK } from '../src/chat.js';
+import { CANNOT_ACT_FALLBACK, ChatResponder, NO_ACTION_FALLBACK, NO_DRAFT_FALLBACK, UNCHECKED_FALLBACK } from '../src/chat.js';
 import { Memory } from '../src/memory.js';
 import { ModelUnavailableError, PRIORITY } from '../src/model/gateway.js';
 import { ScriptedGateway } from './helpers/fakes.js';
@@ -552,5 +552,29 @@ describe('ChatResponder', () => {
       await chat.reply('hi', { timeline: 't', incidentMode: false });
       expect(memory.recentTurns(5).map((t) => t.text)).toContain('hi');
     });
+  });
+});
+
+describe('made-up live facts (2026-10-07 regression)', () => {
+  it('replaces "No pods found…" when no tool ran this turn', async () => {
+    const gw = new ScriptedGateway(() => 'No pods found in the `agentx` namespace. The `default` namespace is empty too.\n\nWant me to check another namespace?');
+    const { chat } = make(gw);
+    const reply = await chat.reply('what is the result of ur run? how many pods?', { timeline: 't', current: ctx(), incidentMode: false });
+    expect(reply.text).toBe(UNCHECKED_FALLBACK);
+  });
+
+  it('keeps the same sentence when a tool result backs it', async () => {
+    const gw = new ScriptedGateway(() => 'No pods found in the agentx namespace.');
+    const { chat } = make(gw);
+    const reply = await chat.reply('how many pods?', { timeline: 't', current: ctx(), incidentMode: false, toolResults: '<untrusted source="mcp:k8s">No resources found</untrusted>' });
+    expect(reply.text).toBe('No pods found in the agentx namespace.');
+  });
+
+  it('keeps a fact Coco already reported from a finished Claude run', async () => {
+    const gw = new ScriptedGateway(() => '4 pods are running in prd-agentx.');
+    const { memory, chat } = make(gw);
+    memory.addTurn('assistant', 'Claude finished (1m 2s · $0.40):\n4 pods running in prd-agentx, all Ready.', 1);
+    const reply = await chat.reply('how many pods again?', { timeline: 't', current: ctx(), incidentMode: false });
+    expect(reply.text).toBe('4 pods are running in prd-agentx.');
   });
 });

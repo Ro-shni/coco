@@ -6,7 +6,7 @@ import { fileURLToPath } from 'node:url';
 import { AuditLog } from './agent/audit.js';
 import { ToolLoop } from './agent/loop.js';
 import { ShellTool } from './agent/shell.js';
-import { ClaudeCodeRunner, ClaudeCodeTool } from './agent/claudeCode.js';
+import { ClaudeCodeRunner, ClaudeCodeTool, openLogInTerminal } from './agent/claudeCode.js';
 import { FindSkillsTool, SkillCatalog, skillHint } from './agent/skills.js';
 import { describeScreen, wrapUntrusted } from './persona/prompt.js';
 import { PRIORITY, type ModelGateway } from './model/gateway.js';
@@ -97,6 +97,7 @@ async function main(): Promise<void> {
     clock: Date.now,
     log,
     onEvent: (e) => void orchestratorRef?.onClaudeEvent(e).catch((err: unknown) => log.error('claude_event_failed', { error: String(err) })),
+    ...(config.claudeCode.showTerminal ? { watch: (logPath: string) => openLogInTerminal(logPath) } : {}),
   });
   const claudeTool = config.claudeCode.enabled
     ? new ClaudeCodeTool({

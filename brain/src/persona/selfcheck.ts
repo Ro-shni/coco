@@ -147,3 +147,27 @@ export function checkReply(input: CheckInput): { ok: boolean; problems: string[]
   if (input.incidentMode && EMOJI.test(text)) problems.push('no emoji during an incident');
   return { ok: problems.length === 0, problems };
 }
+
+/** Live-system facts a reply might state ("No pods found in agentx", "3 replicas are running", "the namespace
+ * is empty", "I checked the cluster"). Only checking can produce these, so with no tool result this turn and
+ * nothing like it on screen they are made up — the 9B model did exactly this on 2026-10-07. */
+const OBSERVATION_FORMS: readonly RegExp[] = [
+  /\b(?:no|zero|\d+)\s+(?:running\s+|ready\s+|active\s+)?(pods?|nodes?|replicas?|containers?|deployments?|services?|alerts?|errors?|instances?)\b[^.?!\n]{0,40}\b(?:found|running|in|are|is|were|was|exist)\b/i,
+  /\b(namespace|cluster|deployment|pod|service)s?\b[^.?!\n]{0,40}\b(?:is|was|are|were|looks?)\s+(?:empty|healthy|down|crashlooping|fine)\b/i,
+  /\bI\s+(?:just\s+|already\s+)?(?:checked|looked (?:at|into)|queried|ran|found|verified)\b/i,
+];
+
+/** The noun of a live-system claim the reply makes, or null. `screenText` (what is visibly on screen)
+ * excuses a claim whose noun also appears there — Coco may describe a kubectl output the user is looking at. */
+export function claimsUncheckedObservation(text: string, screenText = ''): string | null {
+  const clean = text.replace(DRAFTS, ' ');
+  const screen = screenText.toLowerCase();
+  for (const form of OBSERVATION_FORMS) {
+    const hit = clean.match(form);
+    if (!hit) continue;
+    const noun = (hit[1] ?? hit[0]).toLowerCase().replace(/s$/, '');
+    if (screen && /^[a-z]+$/.test(noun) && screen.includes(noun)) continue;
+    return hit[0].trim();
+  }
+  return null;
+}

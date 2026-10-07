@@ -79,6 +79,9 @@ const TOOL_CONFIRM_HANDLED_TEXT = 'That was already handled.';
  * specifically also accepts "run it" and "confirm" — the chip's own label and the obvious synonym. */
 const TOOL_CONFIRM_AFFIRMATION = /^(?:(?:yes|yeah|yep|ok|okay|sure|please|go|go ahead|do it|run|run it|confirm|execute|proceed)[\s,.!]*)+$/i;
 
+/** A short "hand it / send it / pass this to Claude (Code)" — only ever a yes when a Claude confirm is pending. */
+const CLAUDE_HANDOFF_AFFIRMATION = /^(?:(?:yes|ok|okay|sure|please|go ahead|just)[\s,.!]+)*(?:hand|send|give|pass|start|run|open|do)\b[^.?!\n]{0,40}\bclaude(?:\s+code)?\b[\s.!]*$/i;
+
 interface PendingNudge {
   id: string;
   at: number;
@@ -287,7 +290,7 @@ export class Orchestrator {
     const now = this.d.clock();
     if (e.kind === 'started') {
       this.claudeProgress = { lastAt: now, count: 0 };
-      this.say('Claude Code started working on it.', 'status', { speak: false });
+      this.say(e.logPath ? `Claude Code started — follow it live in the Terminal window I opened.\nLog: ${e.logPath}` : 'Claude Code started working on it.', 'status', { speak: false });
       return;
     }
     if (e.kind === 'progress') {
@@ -414,8 +417,9 @@ export class Orchestrator {
     }
     // The confirm timed out before the user answered: ask again (still needs a Run it/"yes"), never run it blind.
     const expired = this.expiredToolConfirm;
+    const reask = !this.pendingToolConfirm && expired !== undefined && now - expired.at < EXPIRED_TOOL_CONFIRM_REASK_MS && this.isToolConfirmAffirmation(text);
     this.expiredToolConfirm = undefined;
-    if (!this.pendingToolConfirm && expired && now - expired.at < EXPIRED_TOOL_CONFIRM_REASK_MS && this.isToolConfirmAffirmation(text)) {
+    if (reask && expired) {
       this.trace.setRoute(turnId, { via: 'tool_confirm_reask' });
       this.askToolConfirm(expired.call, expired.text, source, turnId, 'That one timed out — still want it?\n');
       return;
@@ -828,7 +832,11 @@ export class Orchestrator {
    * else: this is deliberately narrow, since a false positive here would run a write off a typed word
    * instead of a button click. */
   private isToolConfirmAffirmation(text: string): boolean {
-    return isAffirmation(text) || TOOL_CONFIRM_AFFIRMATION.test(text.trim());
+    if (isAffirmation(text) || TOOL_CONFIRM_AFFIRMATION.test(text.trim())) return true;
+    // 2026-10-07: "hand the session to claude code" answering a pending Claude confirm is a yes, not a new
+    // request — treating it as new replaced the RCA task with an unrelated one the model made up.
+    const p = this.pendingToolConfirm ?? this.expiredToolConfirm;
+    return p?.call.qualified === CLAUDE_QUALIFIED && CLAUDE_HANDOFF_AFFIRMATION.test(text.trim());
   }
 
   /** Asks the user to confirm a connector tool call that needs one, via a "Run it"/"Cancel" chip on a plain

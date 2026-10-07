@@ -1,7 +1,7 @@
 import { EventEmitter } from 'node:events';
-import { mkdtempSync, readFileSync } from 'node:fs';
+import { mkdtempSync, readFileSync, statSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
-import { join } from 'node:path';
+import { dirname, join } from 'node:path';
 import { PassThrough } from 'node:stream';
 import { describe, expect, it } from 'vitest';
 import {
@@ -10,6 +10,7 @@ import {
   ClaudeCodeTool,
   buildBrief,
   describeToolUse,
+  openLogInTerminal,
   type ClaudeEvent,
   type SpawnLike,
 } from '../../src/agent/claudeCode.js';
@@ -123,6 +124,31 @@ describe('ClaudeCodeRunner', () => {
     expect(r.busy).toBe(false);
   });
 
+  it('writes a readable live log and hands it to the viewer as soon as the run starts', async () => {
+    const s = fakeSpawn(STREAM);
+    const watched: string[] = [];
+    const { r, events } = runner(s, { watch: (p) => watched.push(p) });
+    const started = r.start({ task: '/meesho-devops-rca:devops-rca pods\n\nContext from the user\'s screen …secret screen text', cwd: '/tmp' });
+    expect(watched).toEqual([join(dirname(watched[0]!), `${(started as { runId: string }).runId}.log`)]);
+    await until(() => events.some((e) => e.kind === 'done'));
+    const log = readFileSync(watched[0]!, 'utf8');
+    expect(log).toContain('task:   /meesho-devops-rca:devops-rca pods');
+    expect(log).not.toContain('secret screen text');
+    expect(log).toContain('→ using bifrost: kubectl mcp server prd supply get pods');
+    expect(log).toContain('Root cause: OOMKilled pods after the 10:40 deploy.');
+    expect(log).toContain('✔ Finished');
+    expect(log).toContain('Resume: claude --resume sess-123');
+    expect(events[0]).toMatchObject({ kind: 'started', logPath: watched[0] });
+  });
+
+  it('a viewer that throws never stops the run', async () => {
+    const s = fakeSpawn(STREAM);
+    const { r, events } = runner(s, { watch: () => { throw new Error('no Terminal'); } });
+    r.start({ task: 'x', cwd: '/tmp' });
+    await until(() => events.some((e) => e.kind === 'done'));
+    expect(events.at(-1)).toMatchObject({ kind: 'done', ok: true });
+  });
+
   it('allows only one run at a time', () => {
     const s = fakeSpawn(STREAM, { hang: true });
     const { r } = runner(s);
@@ -179,5 +205,19 @@ describe('ClaudeCodeTool', () => {
     expect(res.text).toMatch(/Started Claude Code/);
     expect(s.calls[0]!.args[1]).toContain('Slack: checkout 5xx since 10:40');
     expect(s.calls[0]!.args[1]).toContain('<untrusted source="screen">');
+  });
+});
+
+describe('openLogInTerminal', () => {
+  it('writes an executable .command that tails the log and opens it in Terminal', () => {
+    const dir = mkdtempSync(join(tmpdir(), "coco-term-it's-"));
+    const log = join(dir, 'run.log');
+    writeFileSync(log, '');
+    const opened: { cmd: string; args: string[] }[] = [];
+    openLogInTerminal(log, (cmd, args) => opened.push({ cmd, args }));
+    const script = join(dir, 'run.command');
+    expect(opened).toEqual([{ cmd: '/usr/bin/open', args: ['-a', 'Terminal', script] }]);
+    expect(readFileSync(script, 'utf8')).toContain(`tail -n +1 -f '${log.replace(/'/g, "'\\''")}'`);
+    expect(statSync(script).mode & 0o777).toBe(0o700);
   });
 });

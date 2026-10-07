@@ -4,7 +4,7 @@ import { PRIORITY, type ChatMessage, type ModelGateway } from './model/gateway.j
 import { extractAction, intentAllowsAction, type ModelAction } from './persona/actions.js';
 import { claimsDraftExists, extractDraft, type ExtractedDraft } from './persona/drafts.js';
 import { CAPABILITY_RULE, describeScreen, wrapUntrusted } from './persona/prompt.js';
-import { checkReply, claimsPendingAction, claimsUnperformedAction } from './persona/selfcheck.js';
+import { checkReply, claimsPendingAction, claimsUncheckedObservation, claimsUnperformedAction } from './persona/selfcheck.js';
 import type { ContextMsg } from './protocol.js';
 import { noopTrace, type DecisionTrace, type TraceModelCallPurpose } from './trace.js';
 
@@ -42,6 +42,9 @@ export interface ChatReply extends ExtractedDraft {
 const CHAT_MAX_SENTENCES = 6;
 /** Hard cap on model calls per reply(): initial + one honesty rewrite + one draft-claim rewrite, at most. */
 const MAX_MODEL_CALLS = 3;
+/** Replaces a made-up live-system fact: nothing was checked, so offer the thing that can check. */
+export const UNCHECKED_FALLBACK =
+  "I haven't actually checked that — nothing ran. Want me to hand it to Claude Code with your RCA skill?";
 export const CANNOT_ACT_FALLBACK =
   "I can't send or post anything yet — I can draft text here, bring apps forward or launch them, and open websites. Want a draft you can paste?";
 const DRAFT_CLAIM_REWRITE_PROMPT =
@@ -162,10 +165,20 @@ export class ChatResponder {
       }
     }
 
+    // A live-system fact ("No pods found in agentx") with no tool result this turn was invented — say so
+    // plainly instead. Screen text excuses it (Coco may read out a kubectl output the user is looking at).
+    // Real results Coco already reported (a finished Claude Code run) also back a fact it repeats.
+    const reported = memory.recentTurns(12).filter((t) => t.role === 'assistant' && t.text.startsWith('Claude finished')).map((t) => t.text);
+    const screenText = [ctx.current?.windowTitle, ctx.current?.selection, ctx.current?.ocrText, ...reported].filter(Boolean).join('\n');
+    if (!ctx.toolResults && extracted.draft === null && claimsUncheckedObservation(extracted.text, screenText)) {
+      extracted = { text: UNCHECKED_FALLBACK, draft: null };
+      action = undefined;
+    }
+
     // Consistency check: the model sometimes claims it wrote a draft without actually including one. Runs on
     // the final text of whichever path above settled (not just a clean, non-rewritten reply) — but never on
     // our own fallback text, only on model-produced text — and at most once, within the per-reply call budget.
-    const isOwnFallback = extracted.text === CANNOT_ACT_FALLBACK || extracted.text === NO_DRAFT_FALLBACK || extracted.text === NO_ACTION_FALLBACK;
+    const isOwnFallback = extracted.text === UNCHECKED_FALLBACK || extracted.text === CANNOT_ACT_FALLBACK || extracted.text === NO_DRAFT_FALLBACK || extracted.text === NO_ACTION_FALLBACK;
     if (extracted.draft === null && !isOwnFallback && claimsDraftExists(extracted.text) && calls < MAX_MODEL_CALLS) {
       const rewrite: ChatMessage[] = [
         ...messages,

@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { checkReply, claimsPendingAction, claimsUnperformedAction, countSentences } from '../../src/persona/selfcheck.js';
+import { checkReply, claimsPendingAction, claimsUnperformedAction, countSentences, claimsUncheckedObservation } from '../../src/persona/selfcheck.js';
 
 const base = { kind: 'suggestion' as const, incidentMode: false, maxSentences: 2 };
 
@@ -251,5 +251,29 @@ describe('claimsUnperformedAction — promises', () => {
   });
   it('does not flag offers phrased as questions', () => {
     expect(claimsUnperformedAction('Want me to run it?')).toBeNull();
+  });
+});
+
+describe('claimsUncheckedObservation', () => {
+  it.each([
+    'No pods found in the `agentx` namespace. The `default` namespace is empty too.',
+    'No pods found in the `prd-agentx` namespace either.',
+    '3 replicas are running on supply-prd.',
+    'I checked the cluster and it looks fine.',
+    'The namespace is empty.',
+  ])('flags a made-up live fact: %s', (t) => {
+    expect(claimsUncheckedObservation(t)).not.toBeNull();
+  });
+
+  it.each([
+    'Want me to hand it to Claude Code to count the pods in agentx?',
+    'Vignesh asked about the custom MCP image. Want a draft reply?',
+    "I haven't checked the pods yet.",
+  ])('leaves normal replies alone: %s', (t) => {
+    expect(claimsUncheckedObservation(t)).toBeNull();
+  });
+
+  it('is excused when the same thing is on screen (reading out a kubectl output)', () => {
+    expect(claimsUncheckedObservation('3 pods are running in checkout.', 'NAME READY STATUS\ncheckout-1 1/1 Running\npods')).toBeNull();
   });
 });
