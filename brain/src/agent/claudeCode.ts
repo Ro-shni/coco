@@ -192,7 +192,7 @@ export class ClaudeCodeTool {
     inputSchema: {
       type: 'object',
       properties: {
-        task: { type: 'string', description: 'The prompt for Claude Code, e.g. "/meesho-devops-rca:devops-rca checkout-service 5xx since 10:40 on supply-prd"' },
+        task: { type: 'string', description: "The prompt for Claude Code: the skill's slash command (if one applies) followed by the user's issue in their own words. Only include details the user said or that are on their screen — never invent services, times or environments." },
         cwd: { type: 'string', description: 'Absolute folder to run in (default: home folder)' },
       },
       required: ['task'],
