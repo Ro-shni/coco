@@ -116,3 +116,12 @@ describe('canonicalizeTask', () => {
     expect(cat.canonicalizeTask('explain this error')).toBe('explain this error');
   });
 });
+
+describe('canonicalizeTask without a slash command', () => {
+  it('prefixes the skill a task clearly names', () => {
+    const cat = new SkillCatalog({ home: fakeHome() });
+    cat.refresh();
+    expect(cat.canonicalizeTask('Misho RCSQ for the checkout 5xx alert')).toBe('/meesho-devops-rca:devops-rca Misho RCSQ for the checkout 5xx alert');
+    expect(cat.canonicalizeTask('explain why the build failed')).toBe('explain why the build failed');
+  });
+});

@@ -160,7 +160,12 @@ export class SkillCatalog {
    * "/meesho-devops-rca:devops-rca"); returns the task unchanged when it already matches or nothing is close. */
   canonicalizeTask(task: string): string {
     const m = /^\s*(\/[\w.-]+(?::[\w.-]+)?)(.*)$/s.exec(task);
-    if (!m) return task;
+    if (!m) {
+      // No slash command, but the task clearly names an installed skill ("Misho RCSQ …" → devops-rca):
+      // prefix it, so Claude Code runs the skill instead of guessing what the name meant.
+      const best = this.bestMatch(task);
+      return best ? `${best} ${task.trim()}` : task;
+    }
     const cmd = m[1]!;
     if (this.skills.some((s) => s.command === cmd)) return task;
     let best: { command: string; sim: number } | undefined;
@@ -169,6 +174,20 @@ export class SkillCatalog {
       if (!best || sim > best.sim) best = { command: s.command, sim };
     }
     return best && best.sim >= 0.8 ? `${best.command}${m[2]}` : task;
+  }
+
+  /** The installed skill a text clearly names: at least two of its name words matched (e.g. "misho" + "rca"). */
+  private bestMatch(text: string): string | undefined {
+    const q = tokens(text);
+    let best: { command: string; score: number } | undefined;
+    for (const s of this.skills) {
+      if (s.kind !== 'skill' || /setup/.test(s.name)) continue;
+      const nameToks = tokens(`${s.plugin ?? ''} ${s.name}`);
+      const hits = new Set(q.filter((t) => nameToks.some((n) => similarity(t, n) >= 0.6)).map((t) => t));
+      const score = hits.size;
+      if (score >= 2 && (!best || score > best.score)) best = { command: s.command, score };
+    }
+    return best?.command;
   }
 
   /** Installed matches plus installable plugins that match, for "is there a skill for X?". */
