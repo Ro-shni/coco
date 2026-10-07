@@ -169,7 +169,7 @@ async function main(): Promise<void> {
         api: {
           registry, manager, secrets, audit, oauth,
           builtinTools: () => [shell.info, ...(claudeTool ? [claudeTool.info] : []), findSkills.info],
-          playground: (question) => tools.gather({ utterance: question, untrustedText: '' }),
+          playground: (question) => { const hint = skillHint(skills, question); return tools.gather({ utterance: question, untrustedText: '', ...(hint ? { hint } : {}) }); },
           health: () => gateway.health(),
           models: { main: config.models.main, vision: config.models.vision ?? config.models.main },
           claudeJsonPath: join(homedir(), '.claude.json'),
