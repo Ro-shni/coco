@@ -56,7 +56,7 @@ describe('buildNudgeMessages', () => {
   it('limits offers to things Coco can actually do, including in the examples', () => {
     const [system] = buildNudgeMessages(input);
     expect(system!.content).toContain(
-      "- Only offer things you can actually do: explain what's on screen, draft text in chat for the user to paste, bring an app/window to the front (launching it if it isn't running), or open a website. Never offer to send, post, reply, approve, merge, click, or type.",
+      "- Only offer things you can actually do: explain what's on screen, draft text in chat for the user to paste, bring an app/window to the front (launching it if it isn't running), open a website, run a Terminal command, or hand a task to Claude Code (including a Claude skill such as /meesho-devops-rca) — the last two only after the user OKs it. Never offer to send, post, reply, approve, merge, click, or type.",
     );
     expect(system!.content).not.toContain('line it up');
   });

@@ -10,7 +10,7 @@ import { silentLogger } from '../src/logger.js';
 import { Memory } from '../src/memory.js';
 import { ModelRequestError, ModelUnavailableError, PRIORITY } from '../src/model/gateway.js';
 import { NudgePolicy } from '../src/nudge/policy.js';
-import { Orchestrator, type OrchestratorDeps } from '../src/orchestrator.js';
+import { Orchestrator, TOOL_CONFIRM_TTL_MS, type OrchestratorDeps } from '../src/orchestrator.js';
 import type { NudgeDecision } from '../src/persona/decision.js';
 import { encodeBrainMessage, type ActivityState, type BrainToBody, type PasteMsg, type SayMsg } from '../src/protocol.js';
 import { createFileTrace, type DecisionTrace } from '../src/trace.js';
@@ -1312,30 +1312,30 @@ describe('tools', () => {
     expect(s.says().at(-1)!.text).toBe('Okay — I won\'t run it.');
   });
 
-  it('expires an unanswered confirm after 2 minutes, and a late click says so (M1) instead of falling through', async () => {
+  it('expires an unanswered confirm after its TTL, and a late click says so (M1) instead of falling through', async () => {
     const tools = fakeTools({ runs: [], pending: pendingCall, toolContext: '' });
     const s = setup({ tools });
     await s.o.handle(utter('create a jira issue'));
     const ask = s.says().at(-1)!;
-    s.advance(121_000);
+    s.advance(TOOL_CONFIRM_TTL_MS + 1_000);
     await s.o.pulse();
     expect(tools.recordDecision).toHaveBeenCalledWith(pendingCall, 'expired');
     await s.o.handle(chip(ask.nudgeId, 'Run it'));
     expect(tools.runConfirmed).not.toHaveBeenCalled();
     expect(s.reply).not.toHaveBeenCalled();
-    expect(s.says().at(-1)!.text).toBe('That request expired — ask me again.');
+    expect(s.says().at(-1)!.text).toBe('That request expired — say "yes" and I\'ll ask again.');
   });
 
-  it('I1/M1: a click past the 120s TTL but before pulse() also audits expired and says so', async () => {
+  it('I1/M1: a click past the TTL but before pulse() also audits expired and says so', async () => {
     const tools = fakeTools({ runs: [], pending: pendingCall, toolContext: '' });
     const s = setup({ tools });
     await s.o.handle(utter('create a jira issue'));
     const ask = s.says().at(-1)!;
-    s.advance(121_000); // no pulse() in between
+    s.advance(TOOL_CONFIRM_TTL_MS + 1_000); // no pulse() in between
     await s.o.handle(chip(ask.nudgeId, 'Run it'));
     expect(tools.recordDecision).toHaveBeenCalledWith(pendingCall, 'expired');
     expect(tools.runConfirmed).not.toHaveBeenCalled();
-    expect(s.says().at(-1)!.text).toBe('That request expired — ask me again.');
+    expect(s.says().at(-1)!.text).toBe('That request expired — say "yes" and I\'ll ask again.');
   });
 
   it('I1/N3: a double click on the same tool-confirm chip runs it once; the second click says it was already handled', async () => {
@@ -1388,7 +1388,7 @@ describe('tools', () => {
     expect(tools.recordDecision).toHaveBeenCalledWith(pendingCall, 'denied');
     await s.o.handle(chip(ask.nudgeId, 'Run it'));
     expect(tools.runConfirmed).not.toHaveBeenCalled();
-    expect(s.says().at(-1)!.text).toBe('That request expired — ask me again.');
+    expect(s.says().at(-1)!.text).toBe('That request expired — say "yes" and I\'ll ask again.');
   });
 
   it('I1: a second ask supersedes the first — the stale chip expires, the fresh one still runs', async () => {
@@ -1410,7 +1410,7 @@ describe('tools', () => {
     const ask2 = s.says().at(-1)!;
     expect(tools.recordDecision).toHaveBeenCalledWith(pendingCall, 'denied');
     await s.o.handle(chip(ask1.nudgeId, 'Run it'));
-    expect(s.says().at(-1)!.text).toBe('That request expired — ask me again.');
+    expect(s.says().at(-1)!.text).toBe('That request expired — say "yes" and I\'ll ask again.');
     expect(tools.runConfirmed).not.toHaveBeenCalled();
     await s.o.handle(chip(ask2.nudgeId, 'Run it'));
     expect(tools.runConfirmed).toHaveBeenCalledWith(pendingCall2);
@@ -1460,14 +1460,32 @@ describe('tools', () => {
     },
   );
 
-  it('a typed "run" after the confirm expired says so and runs nothing', async () => {
+  it('a typed "yes" after the confirm expired re-asks it (never runs blind); the next "yes" runs it', async () => {
     const tools = fakeTools({ runs: [], pending: pendingCall, toolContext: '' });
     const s = setup({ tools });
     await s.o.handle(utter('create a jira issue for this bug'));
-    s.advance(121_000);
-    await s.o.handle(utter('run'));
+    s.advance(TOOL_CONFIRM_TTL_MS + 17_000);
+    await s.o.pulse(); // the real-world order: a pulse expires it before the user answers
+    await s.o.handle(utter('yes'));
     expect(tools.runConfirmed).not.toHaveBeenCalled();
-    expect(s.says().at(-1)!.text).toBe("That request expired — ask me again.");
+    expect(s.reply).not.toHaveBeenCalled();
+    const reask = s.says().at(-1)!;
+    expect(reask.text).toMatch(/^That one timed out — still want it\?/);
+    expect(reask.chips).toEqual(['Run it', 'Cancel']);
+    await s.o.handle(utter('yes'));
+    expect(tools.runConfirmed).toHaveBeenCalledWith(pendingCall);
+  });
+
+  it('a "yes" long after an expired confirm is just a normal message', async () => {
+    const tools = fakeTools({ runs: [], pending: pendingCall, toolContext: '' });
+    const s = setup({ tools });
+    await s.o.handle(utter('create a jira issue for this bug'));
+    s.advance(TOOL_CONFIRM_TTL_MS + 1_000);
+    await s.o.pulse();
+    s.advance(31 * 60_000);
+    await s.o.handle(utter('yes'));
+    expect(tools.runConfirmed).not.toHaveBeenCalled();
+    expect(s.says().at(-1)?.text ?? '').not.toMatch(/timed out/);
   });
 
   it('a typed "run" with nothing pending is just a normal message', async () => {

@@ -9,7 +9,7 @@ import type { NudgeDecision } from './persona/decision.js';
 export type TraceSource = 'voice' | 'chat';
 
 /** Which branch of onUtterance handled this turn. */
-export type TraceRouteVia = 'offer' | 'paste' | 'mute' | 'clear' | 'command' | 'model';
+export type TraceRouteVia = 'offer' | 'paste' | 'mute' | 'clear' | 'command' | 'model' | 'tool_confirm_reask';
 
 export interface TraceRoute {
   via: TraceRouteVia;

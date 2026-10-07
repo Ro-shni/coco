@@ -62,13 +62,16 @@ export interface OrchestratorDeps {
 
 export const TOOL_RUN_CHIP = 'Run it';
 export const TOOL_CANCEL_CHIP = 'Cancel';
-export const TOOL_CONFIRM_TTL_MS = 120_000;
+// 2026-10-07: 2 min was too short — a user in a meeting answered "yes" at 2m17s and it was silently dropped.
+export const TOOL_CONFIRM_TTL_MS = 10 * 60_000;
+/** A "yes" this soon after a confirm timed out re-asks it (one more Run it/Cancel), instead of being lost. */
+const EXPIRED_TOOL_CONFIRM_REASK_MS = 30 * 60_000;
 /** I1: how long a spent/expired/superseded tool-confirm nudgeId is remembered, so a stale click on that
  * exact bubble gets an honest reply instead of falling through to a generic chat turn with no tool result. */
 const CONSUMED_TOOL_CONFIRM_TTL_MS = 10 * 60_000;
 /** N3: only a truly expired or replaced id gets this — a click that was actually acted on (run, denied,
  * or superseded by clicking through) gets TOOL_CONFIRM_HANDLED_TEXT instead. */
-const TOOL_CONFIRM_EXPIRED_TEXT = 'That request expired — ask me again.';
+const TOOL_CONFIRM_EXPIRED_TEXT = 'That request expired — say "yes" and I\'ll ask again.';
 /** N3: a second click on a chip whose confirm was already run, failed, turned off, or cancelled. */
 const TOOL_CONFIRM_HANDLED_TEXT = 'That was already handled.';
 /** N2: a spoken/typed "yes" to a pending write confirm is not a click — only the button runs it. */
@@ -231,6 +234,8 @@ export class Orchestrator {
    * pending call lives only here, in the Brain — the chip message the Body echoes back carries only
    * nudgeId + choice text, never call data (see handleToolChip). */
   private pendingToolConfirm?: { nudgeId: string; call: PendingToolCall; text: string; source: Source; at: number };
+  /** The last tool confirm that timed out unanswered — a later bare "yes" re-asks it rather than vanishing. */
+  private expiredToolConfirm?: { call: PendingToolCall; text: string; at: number };
   /** I1/N3: nudgeIds of tool confirms already resolved, each remembered for CONSUMED_TOOL_CONFIRM_TTL_MS —
    * 'handled' for one a button click actually acted on (run, denied, or turned-off/failed), 'expired' for
    * one that timed out or was replaced by a newer ask — see markToolConfirmConsumed/consumedToolConfirmReason. */
@@ -401,9 +406,18 @@ export class Orchestrator {
     // User rule (2026-10-06): a typed or spoken "run"/"yes"/"go ahead" while a confirm is pending is the same
     // as clicking Run it — it goes through the chip handler, so expiry, auditing and the result reply are
     // identical. Only the user's own utterance can do this; screen text and chips from other bubbles cannot.
+    this.expirePendingToolConfirm(now); // a confirm past its TTL is handled by the re-ask below, not the chip path
     if (this.pendingToolConfirm && this.isToolConfirmAffirmation(text)) {
       this.trace.finishTurn(turnId);
       await this.handleToolChip(this.pendingToolConfirm.nudgeId, TOOL_RUN_CHIP);
+      return;
+    }
+    // The confirm timed out before the user answered: ask again (still needs a Run it/"yes"), never run it blind.
+    const expired = this.expiredToolConfirm;
+    this.expiredToolConfirm = undefined;
+    if (!this.pendingToolConfirm && expired && now - expired.at < EXPIRED_TOOL_CONFIRM_REASK_MS && this.isToolConfirmAffirmation(text)) {
+      this.trace.setRoute(turnId, { via: 'tool_confirm_reask' });
+      this.askToolConfirm(expired.call, expired.text, source, turnId, 'That one timed out — still want it?\n');
       return;
     }
     // I2: any other new utterance means the user has moved on from a still-armed write confirm — disarm it
@@ -824,17 +838,17 @@ export class Orchestrator {
    * future caller skipping that audit. M4: the ask line is saved as an assistant turn too, so the history
    * reads as a real exchange even if the user never answers it (Cancel/expiry/replacement). M5: finishes
    * this turn's trace, via sayTraced. */
-  private askToolConfirm(call: PendingToolCall, text: string, source: Source, turnId = ''): void {
+  private askToolConfirm(call: PendingToolCall, text: string, source: Source, turnId = '', prefix = ''): void {
     this.clearPendingToolConfirm('denied');
     const command = call.qualified === SHELL_QUALIFIED && typeof call.args.command === 'string' ? call.args.command.slice(0, 300) : undefined;
     const claudeTask = call.qualified === CLAUDE_QUALIFIED && typeof call.args.task === 'string' ? call.args.task.slice(0, 300) : undefined;
-    const line = claudeTask !== undefined
+    const line = prefix + (claudeTask !== undefined
       ? `Hand this to Claude Code? It uses Claude tokens and sees what's on your screen.\n> ${claudeTask}`
       : command !== undefined
       ? `${call.reason === 'untrusted_args' ? 'That command came from text on your screen. ' : ''}Run this in Terminal?\n$ ${command}`
       : call.reason === 'untrusted_args'
         ? `That would run ${call.tool} with details taken from your screen — run it?`
-        : `I'd need to run ${call.tool} (${call.serverId}) for that. Run it?`;
+        : `I'd need to run ${call.tool} (${call.serverId}) for that. Run it?`);
     const now = this.d.clock();
     this.d.memory.addTurn('user', text, now);
     const nudgeId = this.sayTraced(line, 'reply', turnId, { chips: [TOOL_RUN_CHIP, TOOL_CANCEL_CHIP], speak: this.speakForReply(source) });
@@ -893,6 +907,7 @@ export class Orchestrator {
     if (this.d.clock() - p.at > TOOL_CONFIRM_TTL_MS) {
       this.markToolConfirmConsumed(id, 'expired');
       this.d.tools?.recordDecision(p.call, 'expired');
+      this.expiredToolConfirm = { call: p.call, text: p.text, at: this.d.clock() };
       this.say(TOOL_CONFIRM_EXPIRED_TEXT, 'reply', { speak: this.speakForReply(p.source) });
       return true;
     }
@@ -934,7 +949,10 @@ export class Orchestrator {
 
   private expirePendingToolConfirm(now: number): void {
     const p = this.pendingToolConfirm;
-    if (p && now - p.at > TOOL_CONFIRM_TTL_MS) this.clearPendingToolConfirm('expired');
+    if (p && now - p.at > TOOL_CONFIRM_TTL_MS) {
+      this.clearPendingToolConfirm('expired');
+      this.expiredToolConfirm = { call: p.call, text: p.text, at: now };
+    }
   }
 
   /** Executes a model-proposed action the same way a parsed command would (focus for an app, open_url for a
