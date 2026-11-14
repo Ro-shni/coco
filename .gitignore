@@ -1,0 +1,11 @@
+.superpowers/
+node_modules/
+studio/node_modules/
+dist/
+.build/
+build/
+coverage/
+*.log
+.DS_Store
+studio/test-results/
+studio/playwright-report/

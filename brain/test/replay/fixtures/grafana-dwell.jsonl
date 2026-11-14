@@ -1,0 +1,3 @@
+{"at":0,"msg":{"v":1,"type":"context","app":"Google Chrome","bundleId":"com.google.Chrome","windowTitle":"supply-prd latency - Grafana","url":"https://grafana.example.com/d/abc","ocrText":"p99 latency 120ms 900ms 10:40","private":false,"ts":0}}
+{"at":0,"msg":{"v":1,"type":"activity","state":"reading","ts":0}}
+{"at":300,"msg":{"v":1,"type":"activity","state":"reading","ts":0}}

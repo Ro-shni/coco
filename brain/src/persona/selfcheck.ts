@@ -1,0 +1,173 @@
+import type { SayKind } from '../protocol.js';
+
+export const FILLER_PATTERNS: readonly RegExp[] = [
+  /great question/i,
+  /let me know if/i,
+  /i hope this helps/i,
+  /\bas an ai\b/i,
+  /^(sure|certainly|absolutely|of course)\b[,!.]/i,
+  /feel free to/i,
+  /happy to help/i,
+  /it (looks|seems) like there('s| is) (an|some) (error|issue|problem)\b/i,
+];
+
+const EMOJI = /\p{Extended_Pictographic}/u;
+
+const COMPLETION_VERB =
+  "sent|posted|replied|messaged|emailed|dm'?e?d|approved|merged|deployed|scheduled|submitted|clicked|typed|pressed|shared|forwarded|pinged|notified|delivered|created (?:a|the) (?:pr|ticket|issue)|opened|launched";
+const ADVERB = '(?:just|already|also|now|ok(?:ay)?|alright|all right|great|and|so|yep|done)';
+const LEAD = `(?:${ADVERB}[,!]?\\s+)*`;
+/** Things Coco might claim to have sent: "it", "that", "all", "your message", "the reply"... */
+const SUBJECT = "(?:it|that|this|all|everything|(?:the|your|my)?\\s*(?:message|reply|approval|draft|response|dm|email|note|pr|comment|update)s?)";
+const AUX = "(?:'s been|'s|\\s+(?:is|was|are|were|got|has been|have been))";
+/** Verbs whose "to X" names a recipient ("Sent to Prince"); for the rest "to X" is a place ("Deployed to prd"). */
+const SEND_VERB = "sent|posted|replied|messaged|emailed|dm'?e?d|forwarded|shared|pinged|notified|delivered";
+/** What may follow a bare participle: clause end (or trailing punctuation/emoji), or an object or particle. */
+const OBJECT_FOLLOW = "\\s*(?:$|[^\\w\\s])|\\s+(?:it|that|them|this|the (?:message|reply|draft|approval|note|dm)|over|off|through|across)\\b";
+const SEND_FOLLOW = `(?=${OBJECT_FOLLOW}|\\s+to\\s+\\S)`;
+const BARE_FOLLOW = `(?=${OBJECT_FOLLOW})`;
+const CLAIM_FORMS: readonly { form: RegExp; inQuestions: boolean }[] = [
+  // (z) "it's running" without a tool having run: "Running in background: npx tsc", "Runnig npx jest now",
+  // "I've kicked off the build", "Started the tests for you" — typo-tolerant on "running" (the model wrote
+  // "Runnig" in the wild, which slipped past an exact-word check).
+  { form: /\b(?:run{1,2}i?n?g|runnig|executing|kicked off|kicking off)\b[^.!?\n]{0,80}?(?:\bin (?:the )?background\b|\bfor you\b|\bright now\b|\bnow\b|`[^`]+`)/i, inQuestions: false },
+  { form: /\bin (?:the )?background\b/i, inQuestions: false },
+  // Promises of work nothing is doing: "I'll bring the terminal to the front and run `meesho RCSQ` for you."
+  { form: /\bI(?:'ll| will)\s+(?:\S+\s+){0,8}?(?:run|execute|invoke|kick off)\b/i, inQuestions: false },
+  // (a) first person: "I sent", "I've just replied", "We've pinged"
+  { form: new RegExp(`\\b(?:i|we)(?:'ve|'d| have| had)?\\s+(?:${ADVERB}\\s+)*(?:${COMPLETION_VERB})\\b`, 'i'), inQuestions: true },
+  // (b) passive/stative about the thing: "It's sent", "Message sent to Prince", "Your message has been sent" (not "... sent by pagerduty")
+  { form: new RegExp(`^${LEAD}${SUBJECT}${AUX}?\\s+(?:${ADVERB}\\s+)*(?:${COMPLETION_VERB})\\b(?!\\s+by\\b)`, 'i'), inQuestions: true },
+  // (c)/(d) bare or elliptical completion at clause start: "Sent to Prince", "Just sent it over", "Done, posted it", "Approved ✅"
+  // Only when the participle ends the clause or takes an object/recipient/particle, so factual
+  // nudges ("Deployed at 10:38", "Merged 20 minutes ago", "Approved by Prince") are not claims.
+  // "to X" counts as a recipient only for send-family verbs: "Sent to Prince" yes, "Deployed to prd at 10:38" no.
+  { form: new RegExp(`^${LEAD}(?:${SEND_VERB})${SEND_FOLLOW}`, 'i'), inQuestions: false },
+  { form: new RegExp(`^${LEAD}(?:${COMPLETION_VERB})${BARE_FOLLOW}`, 'i'), inQuestions: false },
+  // (e) a clause that is just "Done"
+  { form: /^done[!.]*$/i, inQuestions: false },
+];
+const NEGATION =
+  /\b(?:can't|cannot|can not|couldn't|could not|didn't|did not|won't|will not|haven't|have not|hasn't|has not|isn't|wasn't|not|never|nothing|nobody|no one|unable to|no way to)\b/i;
+/** Drafts for the user (fenced blocks, quotes) are not claims: "```draft\nSent from my phone\n```". */
+const DRAFTS = /```[\s\S]*?(?:```|$)|"[^"]*"|“[^”]*”|`[^`]*`/g;
+
+/**
+ * Returns the matched phrase when any clause asserts that an outward action (sending, posting,
+ * approving, clicking...) is complete, in first person, passive/stative or bare form. Negated
+ * clauses ("It hasn't been sent"), third-party subjects ("Prince sent", "sent by pagerduty"),
+ * bare forms in questions ("Approved?") and drafted text are not claims.
+ */
+export function claimsUnperformedAction(text: string): string | null {
+  const clean = text.replace(/[‘’]/g, "'").replace(DRAFTS, ' ');
+  for (const sentence of clean.split(/(?<=[.!?])\s+|\n+/)) {
+    const isQuestion = sentence.trim().endsWith('?');
+    for (const raw of sentence.split(/[.!?;:—–]+|\s-\s/)) {
+      const clause = raw.trim();
+      for (const { form, inQuestions } of CLAIM_FORMS) {
+        if (isQuestion && !inQuestions) continue;
+        const hit = clause.match(form);
+        if (hit && !NEGATION.test(clause.slice(0, hit.index! + hit[0].length))) return hit[0].trim();
+      }
+    }
+  }
+  return null;
+}
+
+/** Progressive ("in-flight") verbs and stock hand-off lines Coco might use while an action block is still
+ * pending confirmation from the body, or waiting on a confirm chip — "Opening YouTube for you now.",
+ * "Pulling that up.", "Opening it.", "Launching Arc.", "Let me open that.", "Here you go.". None of these
+ * are completion claims (progressive/hand-off phrasing, not past-tense), so `claimsUnperformedAction` never
+ * flags them — but they still say something is happening (or ready) when, if the action was dropped,
+ * nothing is. */
+const PENDING_ACTION_FORMS: readonly RegExp[] = [
+  // "Opening YouTube for you now.", "Launching Arc for you now.", "Searching for that up now."
+  /\b(?:opening|launching|searching|starting|playing)\b(?:\s+\S+){0,4}\s+(?:for you|now|up)\b/i,
+  // "Pulling that up.", "Bringing it up."
+  /\b(?:pulling|bringing)\s+(?:it|that|this)\s+up\b/i,
+  // bare "Opening it.", "Launching Arc.", "Opening that." — the verb at (near enough) clause start, with
+  // any single object/name and nothing else after it.
+  /^(?:opening|launching)\s+\S+[.!]?$/i,
+  // "Let me open that.", "Let me pull that up.", "Let me bring that up."
+  /\blet me (?:open|launch)\b|\blet me (?:pull|bring)\s+(?:it|that|this)\s+up\b/i,
+  // Coco's stock hand-off lines — only ever checked here once we already know a proposed action was
+  // dropped, so in that context these mean "the (nonexistent) result is ready".
+  /^here (?:it is|you go)\b/i,
+];
+
+/**
+ * True when text implies an open/launch is in progress or ready right now. Used only when a model action
+ * was present in the reply but did not survive (gate rejection or schema mismatch), or while a confirm chip
+ * is still awaited — in that case, a leftover "Opening…"/"Here you go" line would be an honesty failure
+ * (nothing is actually open/ready), even though it is not a *completion* claim `claimsUnperformedAction`
+ * would catch.
+ */
+export function claimsPendingAction(text: string): boolean {
+  const clean = text.replace(/[‘’]/g, "'").replace(DRAFTS, ' ');
+  return clean
+    .split(/(?<=[.!?])\s+|\n+/)
+    .map((s) => s.trim())
+    .some((sentence) => PENDING_ACTION_FORMS.some((form) => form.test(sentence)) && !NEGATION.test(sentence));
+}
+
+export interface CheckInput {
+  text: string;
+  kind: SayKind;
+  incidentMode: boolean;
+  maxSentences: number;
+  /** I3 (task 8 fix round 1): skip the "claims an action you did not perform" check — set only when this
+   * turn's ChatContext carries `toolSucceeded` (a confirmed/auto tool run this turn genuinely completed the
+   * thing being claimed, so the claim isn't false). */
+  skipActionClaim?: boolean;
+}
+
+export function countSentences(text: string): number {
+  return text
+    .split(/(?<=[.!?])\s+/)
+    .map((s) => s.trim())
+    .filter((s) => /[\p{L}\p{N}]/u.test(s)).length;
+}
+
+export function checkReply(input: CheckInput): { ok: boolean; problems: string[] } {
+  const text = input.text.trim();
+  const problems: string[] = [];
+  if (text === '') problems.push('empty reply');
+  for (const pattern of FILLER_PATTERNS) {
+    const match = text.match(pattern);
+    if (match) problems.push(`filler phrase: "${match[0]}"`);
+  }
+  const sentences = countSentences(text);
+  if (sentences > input.maxSentences) problems.push(`too long: ${sentences} sentences (max ${input.maxSentences})`);
+  if ((text.match(/!/g) ?? []).length > 1) problems.push('too many exclamation marks (be dry, not dramatic)');
+  const claim = input.skipActionClaim ? null : claimsUnperformedAction(text);
+  if (claim) {
+    problems.push(`claims an action you did not perform: "${claim}" — you cannot send, post, click, type, approve or merge; say so and offer a draft instead`);
+  }
+  if (input.incidentMode && input.kind === 'quip') problems.push('no jokes during an incident');
+  if (input.incidentMode && EMOJI.test(text)) problems.push('no emoji during an incident');
+  return { ok: problems.length === 0, problems };
+}
+
+/** Live-system facts a reply might state ("No pods found in agentx", "3 replicas are running", "the namespace
+ * is empty", "I checked the cluster"). Only checking can produce these, so with no tool result this turn and
+ * nothing like it on screen they are made up — the 9B model did exactly this on 2026-10-07. */
+const OBSERVATION_FORMS: readonly RegExp[] = [
+  /\b(?:no|zero|\d+)\s+(?:running\s+|ready\s+|active\s+)?(pods?|nodes?|replicas?|containers?|deployments?|services?|alerts?|errors?|instances?)\b[^.?!\n]{0,40}\b(?:found|running|in|are|is|were|was|exist)\b/i,
+  /\b(namespace|cluster|deployment|pod|service)s?\b[^.?!\n]{0,40}\b(?:is|was|are|were|looks?)\s+(?:empty|healthy|down|crashlooping|fine)\b/i,
+  /\bI\s+(?:just\s+|already\s+)?(?:checked|looked (?:at|into)|queried|ran|found|verified)\b/i,
+];
+
+/** The noun of a live-system claim the reply makes, or null. `screenText` (what is visibly on screen)
+ * excuses a claim whose noun also appears there — Coco may describe a kubectl output the user is looking at. */
+export function claimsUncheckedObservation(text: string, screenText = ''): string | null {
+  const clean = text.replace(DRAFTS, ' ');
+  const screen = screenText.toLowerCase();
+  for (const form of OBSERVATION_FORMS) {
+    const hit = clean.match(form);
+    if (!hit) continue;
+    const noun = (hit[1] ?? hit[0]).toLowerCase().replace(/s$/, '');
+    if (screen && /^[a-z]+$/.test(noun) && screen.includes(noun)) continue;
+    return hit[0].trim();
+  }
+  return null;
+}

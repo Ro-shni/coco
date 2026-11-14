@@ -1,0 +1,3 @@
+{"at":0,"msg":{"v":1,"type":"context","app":"Arc","bundleId":"company.thebrowser.Browser","windowTitle":"Rollback runbook - Confluence","url":"https://wiki.example.com/rollback","ocrText":"Rollback runbook. 1. Identify the bad release in ArgoCD history. 2. Pause auto-sync for the application. 3. Roll back to the previous healthy revision. 4. Verify pods are Ready and error rate is back to baseline. 5. Re-enable auto-sync only after the fix is merged. Contacts: devops on-call.","private":false,"ts":0}}
+{"at":0,"msg":{"v":1,"type":"activity","state":"reading","ts":0}}
+{"at":1200,"msg":{"v":1,"type":"activity","state":"reading","ts":0}}

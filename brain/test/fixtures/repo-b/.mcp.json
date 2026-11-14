@@ -1,0 +1,5 @@
+{ "mcpServers": {
+  "isdb": { "type": "stdio", "command": "${CLAUDE_PLUGIN_ROOT}/engine/Tools/isdb/isdb-mcp", "args": [] },
+  "legacy": { "type": "sse", "url": "https://example.com/sse" },
+  "qmd": { "type": "stdio", "command": "qmd", "args": ["mcp"] }
+} }

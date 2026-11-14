@@ -1,0 +1,5 @@
+{"at":0,"msg":{"v":1,"type":"activity","state":"typing","ts":0}}
+{"at":0,"msg":{"v":1,"type":"context","app":"Ghostty","bundleId":"com.mitchellh.ghostty","windowTitle":"zsh — brain","ocrText":"$ npm test\nnpm ERR! code 1\nnpm ERR! Lifecycle script failed","private":false,"ts":0}}
+{"at":10,"msg":{"v":1,"type":"activity","state":"reading","ts":0}}
+{"at":11,"msg":{"v":1,"type":"context","app":"Ghostty","bundleId":"com.mitchellh.ghostty","windowTitle":"zsh — brain","ocrText":"$ npm test\nnpm ERR! code 1\nnpm ERR! Lifecycle script failed\n$","private":false,"ts":0}}
+{"at":60,"msg":{"v":1,"type":"activity","state":"reading","ts":0}}

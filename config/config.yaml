@@ -1,0 +1,27 @@
+# Coco brain configuration. Anything omitted falls back to built-in defaults.
+models:
+  main: qwen3.5:9b      # must be pulled in Ollama; vision-capable models also handle keyframes
+  vision: null          # optional separate vision model if `main` has no vision
+ollama:
+  baseUrl: http://127.0.0.1:11434
+nudge:
+  minGapSec: 180        # minimum seconds between unsolicited nudges
+  tickMinSec: 20        # periodic "should I speak?" check, randomized between min and max
+  tickMaxSec: 30
+  ignoreAfterSec: 20    # a nudge with no response in this window counts as ignored
+look:
+  dwellSec: 5           # seconds on a visual screen before Coco takes a keyframe
+  maxPerMinute: 3
+user:
+  name: Roshni
+  handles: []           # Slack handles (without @) that count as mentions, e.g. [roshni]
+voice:
+  enabled: true          # master switch for Coco speaking aloud (TTS lives in the Swift body)
+  speakNudges: true       # speak unsolicited nudges/quips/questions
+  speakTypedReplies: false # speak replies to typed chat (voice-utterance replies always speak when enabled)
+debug:
+  logContext: false     # never log screen text unless true
+  # trace: true         # opt-in, local-only decision trace log — see README's "Debugging" section
+connectors:
+  scanDirs: []          # folders whose .mcp.json files Studio offers to import
+  oauthCallbackPort: 47823  # fixed loopback port for connector sign-in redirects (http://127.0.0.1:<port>/oauth/callback)
